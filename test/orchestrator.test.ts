@@ -11,6 +11,62 @@ import {
 } from "./helpers.js";
 
 describe("orchestrator integration", () => {
+  it("fails fast when baseline generation produces no artifacts", async () => {
+    const workspaceRoot = await createWorkspaceCopy();
+
+    await expect(
+      runOrchestrator({
+        workspaceRoot,
+        options: {
+          maxSteps: 0
+        },
+        containerRunner: {
+          async runPrompt(execution) {
+            await fs.ensureDir(execution.targetPath);
+          }
+        },
+        scorer: new FakeScorer(workspaceRoot)
+      })
+    ).rejects.toThrow("Baseline generation did not create any files in steps/0/baseline.");
+  });
+
+  it("fails fast when candidate generation produces no artifacts", async () => {
+    const workspaceRoot = await createWorkspaceCopy();
+
+    await expect(
+      runOrchestrator({
+        workspaceRoot,
+        options: {
+          maxSteps: 1
+        },
+        containerRunner: {
+          async runPrompt(execution) {
+            if (execution.targetPath === path.join(workspaceRoot, "skills")) {
+              await fs.writeFile(
+                path.join(workspaceRoot, "skills", "demo", "SKILL.md"),
+                "version=1\n",
+                "utf8"
+              );
+              return;
+            }
+
+            await fs.ensureDir(execution.targetPath);
+            if (execution.targetPath === path.join(workspaceRoot, "steps", "0", "baseline")) {
+              await fs.writeFile(
+                path.join(execution.targetPath, "index.html"),
+                "score=0\n",
+                "utf8"
+              );
+            }
+          }
+        },
+        scorer: new FakeScorer(workspaceRoot)
+      })
+    ).rejects.toThrow(
+      "Candidate generation for step 1/0 did not create any files in steps/1/candidates/0."
+    );
+  });
+
   it("generates the baseline even when max-steps is zero", async () => {
     const workspaceRoot = await createWorkspaceCopy();
     const containerRunner = new FakeContainerRunner(workspaceRoot);

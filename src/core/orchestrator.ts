@@ -201,6 +201,7 @@ export class Orchestrator {
       prompt: await this.workspace.readPrompt(this.workspace.paths.generationPath),
       label: "Baseline generation"
     });
+    await this.workspace.assertDirectoryContainsFiles(baselineDir, "Baseline generation");
 
     await this.workspace.snapshotSkills("original");
     state.incumbentPath = this.workspace.relativeToRoot(baselineDir);
@@ -272,6 +273,10 @@ export class Orchestrator {
         prompt,
         label: `Candidate generation for step ${state.stepIndex}/${candidate.index}`
       });
+      await this.workspace.assertDirectoryContainsFiles(
+        candidateDir,
+        `Candidate generation for step ${state.stepIndex}/${candidate.index}`
+      );
       candidate.status = "generated";
       await this.stateStore.save(state);
       this.logger.info(`Generated candidate ${candidate.index} at ${candidate.path}`);

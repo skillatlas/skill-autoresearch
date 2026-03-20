@@ -21,6 +21,29 @@ const FORWARDED_ENV_VARS = ["CLAUDE_CODE_OAUTH_TOKEN"] as const;
 
 let cachedContainerCliEntryPoint: string | undefined;
 
+function normalizeContainerPath(relativePath: string): string {
+  return relativePath.split(path.sep).join("/");
+}
+
+function resolveTargetPathWithinWorkspace(
+  workspaceRoot: string,
+  targetPath: string
+): string {
+  const relativeTargetPath = path.relative(workspaceRoot, targetPath);
+  if (
+    relativeTargetPath.startsWith("..") ||
+    path.isAbsolute(relativeTargetPath)
+  ) {
+    throw new Error(
+      `Container target path ${targetPath} must be inside workspace ${workspaceRoot}.`
+    );
+  }
+
+  return relativeTargetPath.length > 0
+    ? normalizeContainerPath(relativeTargetPath)
+    : ".";
+}
+
 export function resolveContainerCliEntryPoint(): string {
   if (cachedContainerCliEntryPoint) {
     return cachedContainerCliEntryPoint;
@@ -55,9 +78,14 @@ export function resolveContainerCliEntryPoint(): string {
 
 export function buildContainerExecArgs(
   containerCliEntryPoint: string,
+  workspaceRoot: string,
   execution: ContainerExecution,
   env: NodeJS.ProcessEnv = process.env
 ): string[] {
+  const containerTargetPath = resolveTargetPathWithinWorkspace(
+    workspaceRoot,
+    execution.targetPath
+  );
   const args = [containerCliEntryPoint, "exec"];
 
   for (const envVarName of FORWARDED_ENV_VARS) {
@@ -67,10 +95,13 @@ export function buildContainerExecArgs(
   }
 
   args.push(
-    execution.targetPath,
+    workspaceRoot,
     "--",
-    "claude",
-    "-p",
+    "bash",
+    "-lc",
+    'cd "$1" && claude -p "$2"',
+    "bash",
+    containerTargetPath,
     execution.prompt
   );
 
@@ -86,7 +117,11 @@ export class CodeContainerRunner implements ContainerRunner {
 
   public async runPrompt(execution: ContainerExecution): Promise<void> {
     const containerCliEntryPoint = resolveContainerCliEntryPoint();
-    const args = buildContainerExecArgs(containerCliEntryPoint, execution);
+    const args = buildContainerExecArgs(
+      containerCliEntryPoint,
+      this.workspaceRoot,
+      execution
+    );
 
     this.logger.phase(execution.label, { targetPath: execution.targetPath });
     if (this.verbose) {

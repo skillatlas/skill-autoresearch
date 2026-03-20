@@ -168,6 +168,19 @@ export class WorkspaceManager {
     await fs.ensureDir(targetPath);
   }
 
+  public async assertDirectoryContainsFiles(
+    targetPath: string,
+    label: string
+  ): Promise<void> {
+    if (await this.directoryContainsFiles(targetPath)) {
+      return;
+    }
+
+    throw new Error(
+      `${label} did not create any files in ${this.relativeToRoot(targetPath)}.`
+    );
+  }
+
   public async readPrompt(promptPath: string): Promise<string> {
     return fs.readFile(promptPath, "utf8");
   }
@@ -239,5 +252,26 @@ export class WorkspaceManager {
         );
       }
     }
+  }
+
+  private async directoryContainsFiles(targetPath: string): Promise<boolean> {
+    if (!(await fs.pathExists(targetPath))) {
+      return false;
+    }
+
+    const entries = await fs.readdir(targetPath);
+    for (const entry of entries) {
+      const entryPath = path.join(targetPath, entry);
+      const stats = await fs.stat(entryPath);
+      if (stats.isFile()) {
+        return true;
+      }
+
+      if (stats.isDirectory() && (await this.directoryContainsFiles(entryPath))) {
+        return true;
+      }
+    }
+
+    return false;
   }
 }
