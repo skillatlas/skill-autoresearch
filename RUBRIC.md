@@ -1,5 +1,5 @@
 ---
-model: openai/gpt-4.1
+model: google/gemini-3-flash-preview
 outputType: text
 command: cat "$STEP_PATH/index.html"
 ---
