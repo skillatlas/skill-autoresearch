@@ -4,12 +4,29 @@ Review the current SKILL.md and make ONE targeted improvement. Choose the single
 
 ## Possible improvement directions (pick ONE per iteration)
 
-- **Strengthen specificity** — Replace vague guidance with concrete techniques, values, or examples. "Use interesting typography" is weak; "Pair a geometric display face (e.g. Clash Display, Cabinet Grotesk, or Satoshi) with a humanist body font at 1.15 line-height for body text" is strong.
+- **Improve the creative process** — Strengthen guidance on *how to think* about design decisions rather than dictating specific outcomes. Good: "Derive your color palette from the content's mood and purpose." Bad: "Use emerald green (#0D9F6E) with warm grey (#4B5563)." The skill should teach taste, not prescribe values.
 - **Add a missing dimension** — If the skill lacks guidance on a topic that materially affects output quality (e.g. dark mode treatment, illustration style, icon usage, scroll behavior, loading states, empty states), add a focused section.
 - **Sharpen anti-patterns** — Expand the list of things to avoid with specific, testable examples. "Avoid generic layouts" is vague; "Never use the exact pattern: full-width hero → three equal-width cards → centered testimonial → CTA banner" is actionable.
-- **Improve creative constraints** — Add rules that force variety across generations: "Never reuse the same display font across consecutive outputs", "Alternate between light-dominant and dark-dominant palettes", "Rotate through at least 5 distinct layout strategies".
+- **Improve variety mechanisms** — Add rules that force variety across generations without dictating what the outputs should converge toward. Good: "Never reuse the same display font across consecutive outputs." Bad: "Use Clash Display or Cabinet Grotesk." The goal is divergence, not convergence on a different set of specifics.
 - **Tighten code quality guidance** — Add specific patterns for accessible focus states, reduced-motion handling, fluid typography with `clamp()`, or responsive image strategies.
-- **Refine the aesthetic vocabulary** — Replace generic style labels with richer descriptions that give the model more to work with. "Brutalist" alone is underspecified; "Brutalist: raw monospace type, exposed grid lines, high-contrast black/white with a single neon accent, no border-radius, visible system font stacks" gives clear direction.
+- **Strengthen design principles** — Replace prescriptive values with transferable principles. Good: "Typography hierarchy should create clear visual rhythm through contrast in scale, weight, and spacing." Bad: "Set headings to 4.5rem with 700 weight and -0.02em letter-spacing." Principles guide infinite good outputs; prescriptions produce one.
+
+## Critical constraint: DO NOT over-specify
+
+The skill should guide *how to design*, not dictate *what to design*. Every edit must pass this test:
+
+> "Does this guidance help produce a RANGE of excellent, varied outputs — or does it push every output toward the same specific look?"
+
+**DO NOT** add specific font names, hex colors, pixel values, or exact CSS property values to the skill. These cause every generation to converge on the same aesthetic, which is the opposite of the goal.
+
+- Bad: "Use Clash Display at 4.5rem with #0D9F6E accents"
+- Bad: "Apply 120px vertical padding with a 1.618 golden-ratio scale"
+- Bad: "Set border-radius to 0 for brutalist, 24px for soft"
+- Good: "Choose fonts that have personality — avoid the safe defaults everyone reaches for"
+- Good: "Build a color palette that reinforces the emotional tone of the content"
+- Good: "Let the aesthetic direction dictate spatial rhythm — dense and energetic, or open and contemplative"
+
+If you find yourself writing a specific value (a font name, a color, a number), ask: "Will this make outputs more varied or less varied?" If less varied, rewrite it as a principle instead.
 
 ## Rules
 
