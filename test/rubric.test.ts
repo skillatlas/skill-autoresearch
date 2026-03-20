@@ -22,6 +22,7 @@ Judge the outputs.`,
     );
 
     const rubric = await loadRubric(rubricPath);
+    expect(rubric.provider).toBe("openrouter");
     expect(rubric.modelId).toBe("openai/gpt-4.1");
     expect(rubric.outputType).toBe("text");
     expect(rubric.commands).toEqual([{ command: 'cat "$STEP_PATH/index.html"' }]);
@@ -74,6 +75,28 @@ Judge the outputs.`,
 
     const rubric = await loadRubric(rubricPath);
     expect(rubric.commands).toEqual([{ command: 'cat "$STEP_PATH/index.html"' }]);
+  });
+
+  it("supports an explicit scoring provider", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "rubric-"));
+    const rubricPath = path.join(tempDir, "RUBRIC.md");
+
+    await fs.writeFile(
+      rubricPath,
+      `---
+provider: codex
+model: gpt-5.4
+outputType: text
+command: cat "$STEP_PATH/index.html"
+---
+
+Judge the outputs.`,
+      "utf8"
+    );
+
+    const rubric = await loadRubric(rubricPath);
+    expect(rubric.provider).toBe("codex");
+    expect(rubric.modelId).toBe("gpt-5.4");
   });
 
   it("interpolates STEP_PATH placeholders", () => {

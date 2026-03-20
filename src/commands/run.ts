@@ -4,13 +4,16 @@ import { Command, InvalidArgumentError } from "commander";
 import { CodeContainerRunner } from "../core/container-runner.js";
 import { Logger } from "../core/logger.js";
 import { Orchestrator, RunOptions } from "../core/orchestrator.js";
+import { loadRubric } from "../core/rubric.js";
 import {
+  CodexVoteJudge,
   loadWorkspaceEnv,
   OpenRouterVoteJudge,
   Scorer
 } from "../core/scorer.js";
 import { StateStore } from "../core/state-store.js";
 import { WorkspaceManager } from "../core/workspace.js";
+import { ScoringProvider, scoringProviderSchema } from "../types/rubric.js";
 
 function parseNonNegativeInteger(value: string): number {
   const parsedValue = Number.parseInt(value, 10);
@@ -30,6 +33,17 @@ function parsePositiveInteger(value: string): number {
   return parsedValue;
 }
 
+function parseScoringProvider(value: string): ScoringProvider {
+  const parsed = scoringProviderSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new InvalidArgumentError(
+      `Expected one of ${scoringProviderSchema.options.join(", ")}, received ${value}.`
+    );
+  }
+
+  return parsed.data;
+}
+
 export interface RunCliOptions {
   candidates: number;
   votes: number;
@@ -37,6 +51,7 @@ export interface RunCliOptions {
   maxSteps: number;
   stasisSteps: number;
   resume: boolean;
+  scoringProvider?: ScoringProvider;
   model?: string;
   dryRun: boolean;
   verbose: boolean;
@@ -49,7 +64,10 @@ export async function runCommand(
   const workspaceRoot = path.resolve(workspaceArg ?? process.cwd());
   const logger = new Logger(options.verbose);
   const workspace = new WorkspaceManager(workspaceRoot, logger);
-  loadWorkspaceEnv(workspace.paths.envPath);
+  const rubric = await loadRubric(workspace.paths.rubricPath);
+  loadWorkspaceEnv(workspace.paths.envPath, {
+    scoringProvider: options.scoringProvider ?? rubric.provider
+  });
 
   const runOptions: RunOptions = {
     workspaceRoot,
@@ -59,6 +77,7 @@ export async function runCommand(
     maxSteps: options.maxSteps,
     stasisSteps: options.stasisSteps,
     resume: options.resume,
+    scoringProviderOverride: options.scoringProvider,
     modelOverride: options.model,
     dryRun: options.dryRun
   };
@@ -67,7 +86,15 @@ export async function runCommand(
     workspace,
     new StateStore(workspace.paths.statePath, logger),
     new CodeContainerRunner(workspaceRoot, logger, options.verbose),
-    new Scorer(workspaceRoot, logger, new OpenRouterVoteJudge(), options.verbose),
+    new Scorer(
+      workspaceRoot,
+      logger,
+      {
+        openrouter: new OpenRouterVoteJudge(),
+        codex: new CodexVoteJudge(workspaceRoot, logger, options.verbose)
+      },
+      options.verbose
+    ),
     logger,
     runOptions
   );
@@ -85,6 +112,11 @@ export function buildRunCommand(): Command {
     .option("--max-steps <n>", "Maximum mutation iterations", parseNonNegativeInteger, 20)
     .option("--stasis-steps <n>", "Rejected mutation streak before stopping", parseNonNegativeInteger, 5)
     .option("--resume", "Resume from existing state", false)
+    .option(
+      "--scoring-provider <provider>",
+      "Override rubric scoring provider",
+      parseScoringProvider
+    )
     .option("--model <id>", "Override rubric model")
     .option("--dry-run", "Validate inputs and print planned actions without running agents", false)
     .option("--verbose", "Include child command details in logs", false)

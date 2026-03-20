@@ -49,8 +49,15 @@ describe("scoring helpers", () => {
       workspaceRoot,
       new Logger(false),
       {
-        async generateVote() {
-          throw new Error("generateVote should not be called in this test");
+        openrouter: {
+          async generateVote() {
+            throw new Error("generateVote should not be called in this test");
+          }
+        },
+        codex: {
+          async generateVote() {
+            throw new Error("generateVote should not be called in this test");
+          }
         }
       },
       false
@@ -60,6 +67,7 @@ describe("scoring helpers", () => {
       scorer.collectEvidence(
         {
           sourcePath: "RUBRIC.md",
+          provider: "openrouter",
           modelId: "test-model",
           outputType: "image",
           commands: [

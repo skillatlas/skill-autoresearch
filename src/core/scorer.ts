@@ -2,7 +2,7 @@ import fs from "fs-extra";
 import { generateObject } from "ai";
 import { openrouter } from "@openrouter/ai-sdk-provider";
 import dotenv from "dotenv";
-import { execaCommand } from "execa";
+import { execa, execaCommand } from "execa";
 import path from "node:path";
 
 import { Logger } from "./logger.js";
@@ -15,7 +15,9 @@ import {
 import {
   EvidenceItem,
   NormalizedRubric,
+  ScoringProvider,
   ScoreVote,
+  scoreVoteJsonSchema,
   scoreVoteSchema
 } from "../types/rubric.js";
 
@@ -112,15 +114,16 @@ export function selectBestWinningCandidate(
     })[0];
 }
 
-export function loadWorkspaceEnv(envPath: string): void {
-  if (!fs.existsSync(envPath)) {
-    throw new Error(`Missing required environment file: ${envPath}`);
+export function loadWorkspaceEnv(
+  envPath: string,
+  options: { scoringProvider: ScoringProvider }
+): void {
+  if (fs.existsSync(envPath)) {
+    dotenv.config({ path: envPath, override: true });
   }
 
-  dotenv.config({ path: envPath, override: true });
-
-  if (!process.env.OPENROUTER_API_KEY) {
-    throw new Error("Missing OPENROUTER_API_KEY in workspace .env.");
+  if (options.scoringProvider === "openrouter" && !process.env.OPENROUTER_API_KEY) {
+    throw new Error("Missing OPENROUTER_API_KEY in workspace .env for OpenRouter scoring.");
   }
 }
 
@@ -137,6 +140,7 @@ export interface ScoringService {
   loadRubric(rubricPath: string): Promise<NormalizedRubric>;
   collectEvidence(rubric: NormalizedRubric, stepPath: string): Promise<EvidenceItem[]>;
   runSingleVote(input: {
+    provider: ScoringProvider;
     modelId: string;
     rubricPrompt: string;
     incumbentEvidence: EvidenceItem[];
@@ -212,11 +216,165 @@ export class OpenRouterVoteJudge implements VoteJudge {
   }
 }
 
+export class CodexVoteJudge implements VoteJudge {
+  private readonly runtimeDir: string;
+  private readonly schemaPath: string;
+
+  public constructor(
+    private readonly workspaceRoot: string,
+    private readonly logger: Logger,
+    private readonly verbose: boolean
+  ) {
+    this.runtimeDir = path.join(this.workspaceRoot, ".skill-autoresearch", "codex");
+    this.schemaPath = path.join(this.runtimeDir, "score-vote-schema.json");
+  }
+
+  public async generateVote(input: {
+    modelId: string;
+    rubricPrompt: string;
+    incumbentEvidence: EvidenceItem[];
+    candidateEvidence: EvidenceItem[];
+  }): Promise<ScoreVote> {
+    await fs.ensureDir(this.runtimeDir);
+    await this.ensureSchemaFile();
+
+    const outputPath = path.join(
+      this.runtimeDir,
+      `vote-${Date.now()}-${Math.random().toString(16).slice(2)}.json`
+    );
+    const imagePaths = this.collectImagePaths(
+      input.incumbentEvidence,
+      input.candidateEvidence
+    );
+    const args = [
+      "exec",
+      "--skip-git-repo-check",
+      "--sandbox",
+      "read-only",
+      "--model",
+      input.modelId,
+      "--output-schema",
+      this.schemaPath,
+      "-o",
+      outputPath,
+      ...imagePaths.flatMap((imagePath) => ["--image", imagePath]),
+      this.buildPrompt(input)
+    ];
+
+    if (this.verbose) {
+      this.logger.debug(`codex ${args.join(" ")}`);
+    }
+
+    try {
+      const result = await execa("codex", args, {
+        cwd: this.workspaceRoot,
+        all: true,
+        reject: false
+      });
+
+      if (this.verbose && result.all?.trim()) {
+        this.logger.debug(result.all);
+      }
+
+      if (result.exitCode !== 0) {
+        throw new Error(
+          `Codex scoring failed for model ${input.modelId} with exit code ${result.exitCode}.`
+        );
+      }
+
+      const rawOutput = (await fs.readFile(outputPath, "utf8")).trim();
+      if (rawOutput.length === 0) {
+        throw new Error("Codex scoring returned empty output.");
+      }
+
+      const parsedOutput = JSON.parse(rawOutput) as unknown;
+      return scoreVoteSchema.parse(parsedOutput);
+    } finally {
+      await fs.remove(outputPath);
+    }
+  }
+
+  private async ensureSchemaFile(): Promise<void> {
+    if (await fs.pathExists(this.schemaPath)) {
+      return;
+    }
+
+    await fs.writeJson(this.schemaPath, scoreVoteJsonSchema, { spaces: 2 });
+  }
+
+  private collectImagePaths(
+    incumbentEvidence: EvidenceItem[],
+    candidateEvidence: EvidenceItem[]
+  ): string[] {
+    return [...incumbentEvidence, ...candidateEvidence].flatMap((item) =>
+      item.outputType === "image" ? [item.path] : []
+    );
+  }
+
+  private buildPrompt(input: {
+    rubricPrompt: string;
+    incumbentEvidence: EvidenceItem[];
+    candidateEvidence: EvidenceItem[];
+  }): string {
+    const sections = [
+      "You are scoring two candidates against a rubric.",
+      'Return winner "A" when Candidate A is better, or "B" when Candidate B is better.',
+      "Set confidence between 0 and 1, and keep the rationale concise.",
+      "",
+      "Rubric:",
+      input.rubricPrompt,
+      ""
+    ];
+
+    if (input.incumbentEvidence[0]?.outputType === "text") {
+      sections.push(
+        "Candidate A evidence:",
+        this.formatTextEvidence(input.incumbentEvidence),
+        "",
+        "Candidate B evidence:",
+        this.formatTextEvidence(input.candidateEvidence)
+      );
+      return sections.join("\n");
+    }
+
+    sections.push(
+      "Attached images appear in this exact order:",
+      ...this.formatImageEvidence("Candidate A", input.incumbentEvidence),
+      ...this.formatImageEvidence("Candidate B", input.candidateEvidence),
+      "",
+      "Judge only from the attachment contents and the labels above."
+    );
+    return sections.join("\n");
+  }
+
+  private formatTextEvidence(evidence: EvidenceItem[]): string {
+    return evidence
+      .map((item, index) => {
+        if (item.outputType !== "text") {
+          throw new Error("Mixed evidence types are not supported for Codex scoring.");
+        }
+
+        return `Evidence ${index + 1} (${item.label}):\n${item.content}`;
+      })
+      .join("\n\n");
+  }
+
+  private formatImageEvidence(label: string, evidence: EvidenceItem[]): string[] {
+    return evidence.map((item, index) => {
+      if (item.outputType !== "image") {
+        throw new Error("Mixed evidence types are not supported for Codex scoring.");
+      }
+
+      return `- ${label} image ${index + 1} (${item.label}): ${path.basename(item.path)}`;
+    });
+  }
+}
+
 export class Scorer {
   public constructor(
     private readonly workspaceRoot: string,
     private readonly logger: Logger,
-    private readonly judge: VoteJudge,
+    private readonly judges: Record<ScoringProvider, VoteJudge>,
     private readonly verbose: boolean
   ) {}
 
@@ -305,6 +463,7 @@ export class Scorer {
   }
 
   public async runVoteSeries(input: {
+    provider: ScoringProvider;
     modelId: string;
     rubricPrompt: string;
     incumbentEvidence: EvidenceItem[];
@@ -315,7 +474,7 @@ export class Scorer {
     const votes = [...(input.existingVotes ?? [])];
 
     for (let attempt = votes.length; attempt < input.voteCount; attempt += 1) {
-      const vote = await this.judge.generateVote({
+      const vote = await this.getJudge(input.provider).generateVote({
         modelId: input.modelId,
         rubricPrompt: input.rubricPrompt,
         incumbentEvidence: input.incumbentEvidence,
@@ -337,12 +496,22 @@ export class Scorer {
   }
 
   public async runSingleVote(input: {
+    provider: ScoringProvider;
     modelId: string;
     rubricPrompt: string;
     incumbentEvidence: EvidenceItem[];
     candidateEvidence: EvidenceItem[];
   }): Promise<ScoreVote> {
-    return this.judge.generateVote(input);
+    return this.getJudge(input.provider).generateVote(input);
+  }
+
+  private getJudge(provider: ScoringProvider): VoteJudge {
+    const judge = this.judges[provider];
+    if (!judge) {
+      throw new Error(`Unsupported scoring provider: ${provider}`);
+    }
+
+    return judge;
   }
 
   private async readTextEvidence(

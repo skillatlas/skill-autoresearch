@@ -17,6 +17,7 @@ import { WorkspaceManager } from "../src/core/workspace.js";
 import {
   EvidenceItem,
   NormalizedRubric,
+  ScoringProvider,
   ScoreVote
 } from "../src/types/rubric.js";
 import { RunState } from "../src/types/state.js";
@@ -137,6 +138,7 @@ export interface FakeScorerOptions {
 
 export class FakeScorer implements ScoringService {
   public voteCalls = 0;
+  public readonly providers: ScoringProvider[] = [];
   private failureTriggered = false;
 
   public constructor(
@@ -147,6 +149,7 @@ export class FakeScorer implements ScoringService {
   public async loadRubric(rubricPath: string): Promise<NormalizedRubric> {
     return {
       sourcePath: rubricPath,
+      provider: "openrouter",
       modelId: "test-model",
       outputType: "text",
       commands: [{ command: 'cat "$STEP_PATH/index.html"' }],
@@ -170,12 +173,14 @@ export class FakeScorer implements ScoringService {
   }
 
   public async runSingleVote(input: {
+    provider: ScoringProvider;
     modelId: string;
     rubricPrompt: string;
     incumbentEvidence: EvidenceItem[];
     candidateEvidence: EvidenceItem[];
   }): Promise<ScoreVote> {
     this.voteCalls += 1;
+    this.providers.push(input.provider);
     if (
       this.options.failOnVoteNumber &&
       !this.failureTriggered &&
