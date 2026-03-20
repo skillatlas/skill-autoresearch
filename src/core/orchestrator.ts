@@ -397,6 +397,10 @@ export class Orchestrator {
   }
 
   private getStopReason(state: RunState): "max-steps" | "stasis" | undefined {
+    if (state.currentPhase === "generate-baseline") {
+      return undefined;
+    }
+
     if (completedIterations(state) >= state.maxSteps) {
       return "max-steps";
     }

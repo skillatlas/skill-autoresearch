@@ -11,6 +11,30 @@ import {
 } from "./helpers.js";
 
 describe("orchestrator integration", () => {
+  it("generates the baseline even when max-steps is zero", async () => {
+    const workspaceRoot = await createWorkspaceCopy();
+    const containerRunner = new FakeContainerRunner(workspaceRoot);
+
+    await runOrchestrator({
+      workspaceRoot,
+      options: {
+        maxSteps: 0
+      },
+      containerRunner,
+      scorer: new FakeScorer(workspaceRoot)
+    });
+
+    const state = await readRunState(workspaceRoot);
+    expect(state.status).toBe("completed");
+    expect(state.completedReason).toBe("max-steps");
+    expect(state.history).toHaveLength(0);
+    expect(state.incumbentPath).toBe("steps/0/baseline");
+    expect(containerRunner.executions).toEqual(["steps/0/baseline"]);
+    expect(await fs.pathExists(path.join(workspaceRoot, "steps", "0", "baseline", "index.html"))).toBe(
+      true
+    );
+  });
+
   it("archives old steps and promotes a step winner by candidate majority", async () => {
     const workspaceRoot = await createWorkspaceCopy();
     await fs.ensureDir(path.join(workspaceRoot, "steps", "old"));
