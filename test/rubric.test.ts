@@ -55,6 +55,27 @@ Judge the screenshots.`,
     ]);
   });
 
+  it("supports a single command object in `commands`", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "rubric-"));
+    const rubricPath = path.join(tempDir, "RUBRIC.md");
+
+    await fs.writeFile(
+      rubricPath,
+      `---
+model: openai/gpt-4.1
+outputType: text
+commands:
+  command: cat "$STEP_PATH/index.html"
+---
+
+Judge the outputs.`,
+      "utf8"
+    );
+
+    const rubric = await loadRubric(rubricPath);
+    expect(rubric.commands).toEqual([{ command: 'cat "$STEP_PATH/index.html"' }]);
+  });
+
   it("interpolates STEP_PATH placeholders", () => {
     expect(interpolateStepPath('cat "$STEP_PATH/index.html"', "/tmp/step")).toBe(
       'cat "/tmp/step/index.html"'

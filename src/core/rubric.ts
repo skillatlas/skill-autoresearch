@@ -14,7 +14,7 @@ const rawRubricFrontmatterSchema = z
     outputType: z.enum(["text", "image"]),
     command: z.string().min(1).optional(),
     resultPath: z.string().min(1).optional(),
-    commands: z.array(rubricCommandSchema).min(1).optional()
+    commands: z.union([rubricCommandSchema, z.array(rubricCommandSchema).min(1)]).optional()
   })
   .superRefine((value, ctx) => {
     if (!value.command && !value.commands) {
@@ -56,12 +56,16 @@ export async function loadRubric(rubricPath: string): Promise<NormalizedRubric> 
     throw new Error("Rubric body must not be empty.");
   }
 
-  const commands = frontmatter.commands ?? [
-    {
-      command: frontmatter.command!,
-      resultPath: frontmatter.resultPath
-    }
-  ];
+  const commands = frontmatter.commands
+    ? Array.isArray(frontmatter.commands)
+      ? frontmatter.commands
+      : [frontmatter.commands]
+    : [
+        {
+          command: frontmatter.command!,
+          resultPath: frontmatter.resultPath
+        }
+      ];
 
   if (
     frontmatter.outputType === "image" &&
