@@ -67,6 +67,8 @@ function completedIterations(state: RunState): number {
 }
 
 export class Orchestrator {
+  private pendingStateSave: Promise<void> = Promise.resolve();
+
   public constructor(
     private readonly workspace: WorkspaceManager,
     private readonly stateStore: StateStore,
@@ -101,7 +103,7 @@ export class Orchestrator {
         if (stopReason) {
           state.status = "completed";
           state.completedReason = stopReason;
-          await this.stateStore.save(state);
+          await this.saveState(state);
           this.logger.phase(`Completed run ${state.runId} (${stopReason})`);
           return state;
         }
@@ -132,7 +134,7 @@ export class Orchestrator {
     } catch (error) {
       if (state) {
         state.status = "failed";
-        await this.stateStore.save(state);
+        await this.saveState(state);
       }
 
       throw error;
@@ -166,7 +168,7 @@ export class Orchestrator {
     this.logger.attachLogFile(this.workspace.paths.logsDir, runId);
     const archivePath = await this.workspace.archiveExistingSteps(runId);
     const state = createInitialState(this.workspace, runId, archivePath, this.options);
-    await this.stateStore.save(state);
+    await this.saveState(state);
 
     return state;
   }
@@ -208,7 +210,7 @@ export class Orchestrator {
     state.stepIndex = 1;
     state.status = "running";
     state.currentPhase = "snapshot";
-    await this.stateStore.save(state);
+    await this.saveState(state);
     this.logger.info(`Baseline ready at ${state.incumbentPath}`);
 
     return state;
@@ -219,7 +221,7 @@ export class Orchestrator {
     state.activeCandidates = [];
     state.status = "running";
     state.currentPhase = "mutate-skills";
-    await this.stateStore.save(state);
+    await this.saveState(state);
     this.logger.info(
       `Snapshot saved to ${this.workspace.relativeToRoot(this.workspace.paths.skillsPreviousDir)}`
     );
@@ -253,19 +255,18 @@ export class Orchestrator {
     });
     state.status = "running";
     state.currentPhase = "generate-candidates";
-    await this.stateStore.save(state);
+    await this.saveState(state);
 
     return state;
   }
 
   private async generateCandidates(state: RunState): Promise<RunState> {
     const prompt = await this.workspace.readPrompt(this.workspace.paths.generationPath);
+    const pendingCandidates = state.activeCandidates.filter(
+      (candidate) => candidate.status === "pending"
+    );
 
-    for (const candidate of state.activeCandidates) {
-      if (candidate.status !== "pending") {
-        continue;
-      }
-
+    await this.runInParallel(pendingCandidates, async (candidate) => {
       const candidateDir = this.workspace.resolveWorkspacePath(candidate.path);
       await this.workspace.resetDirectory(candidateDir);
       await this.containerRunner.runPrompt({
@@ -278,13 +279,13 @@ export class Orchestrator {
         `Candidate generation for step ${state.stepIndex}/${candidate.index}`
       );
       candidate.status = "generated";
-      await this.stateStore.save(state);
+      await this.saveState(state);
       this.logger.info(`Generated candidate ${candidate.index} at ${candidate.path}`);
-    }
+    });
 
     state.status = "awaiting-score";
     state.currentPhase = "score";
-    await this.stateStore.save(state);
+    await this.saveState(state);
 
     return state;
   }
@@ -301,16 +302,16 @@ export class Orchestrator {
       rubric,
       state.incumbentPath
     );
+    const pendingCandidates = state.activeCandidates.filter(
+      (candidate) =>
+        !(
+          candidate.status === "scored" &&
+          candidate.votes.length >= state.voteCount &&
+          candidate.comparison
+        )
+    );
 
-    for (const candidate of state.activeCandidates) {
-      if (
-        candidate.status === "scored" &&
-        candidate.votes.length >= state.voteCount &&
-        candidate.comparison
-      ) {
-        continue;
-      }
-
+    await this.runInParallel(pendingCandidates, async (candidate) => {
       const candidateEvidence = await this.scorer.collectEvidence(rubric, candidate.path);
       for (let attempt = candidate.votes.length; attempt < state.voteCount; attempt += 1) {
         const vote = await this.scorer.runSingleVote({
@@ -328,20 +329,20 @@ export class Orchestrator {
           rationale: vote.rationale
         });
         candidate.comparison = summarizeVotes(candidate.votes);
-        await this.stateStore.save(state);
+        await this.saveState(state);
       }
 
       candidate.comparison = summarizeVotes(candidate.votes);
       candidate.status = "scored";
-      await this.stateStore.save(state);
+      await this.saveState(state);
       this.logger.info(
         `Candidate ${candidate.index} scored ${candidate.comparison.bVotes}/${state.voteCount} vote(s) for B.`
       );
-    }
+    });
 
     state.status = "running";
     state.currentPhase = "promote";
-    await this.stateStore.save(state);
+    await this.saveState(state);
 
     return state;
   }
@@ -403,9 +404,31 @@ export class Orchestrator {
     state.stepIndex += 1;
     state.status = "running";
     state.currentPhase = "snapshot";
-    await this.stateStore.save(state);
+    await this.saveState(state);
 
     return state;
+  }
+
+  private async runInParallel<T>(
+    items: ReadonlyArray<T>,
+    worker: (item: T) => Promise<void>
+  ): Promise<void> {
+    const results = await Promise.allSettled(items.map((item) => worker(item)));
+    const rejection = results.find(
+      (result): result is PromiseRejectedResult => result.status === "rejected"
+    );
+
+    if (rejection) {
+      throw rejection.reason;
+    }
+  }
+
+  private async saveState(state: RunState): Promise<void> {
+    const saveOperation = this.pendingStateSave.then(() =>
+      this.stateStore.save(structuredClone(state))
+    );
+    this.pendingStateSave = saveOperation.catch(() => undefined);
+    await saveOperation;
   }
 
   private getStopReason(state: RunState): "max-steps" | "stasis" | undefined {

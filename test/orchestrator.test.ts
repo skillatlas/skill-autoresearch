@@ -10,6 +10,78 @@ import {
   runOrchestrator
 } from "./helpers.js";
 
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
+}
+
+function relativeTargetPath(workspaceRoot: string, targetPath: string): string {
+  return path.relative(workspaceRoot, targetPath).split(path.sep).join("/");
+}
+
+class ConcurrentCandidateRunner {
+  public maxActiveCandidateRuns = 0;
+  private activeCandidateRuns = 0;
+  private readonly delegate: FakeContainerRunner;
+
+  public constructor(
+    private readonly workspaceRoot: string,
+    options: ConstructorParameters<typeof FakeContainerRunner>[1] = {}
+  ) {
+    this.delegate = new FakeContainerRunner(workspaceRoot, options);
+  }
+
+  public get executions(): string[] {
+    return this.delegate.executions;
+  }
+
+  public async runPrompt(
+    execution: Parameters<FakeContainerRunner["runPrompt"]>[0]
+  ): Promise<void> {
+    const isCandidateRun = /^steps\/\d+\/candidates\/\d+$/.test(
+      relativeTargetPath(this.workspaceRoot, execution.targetPath)
+    );
+
+    if (!isCandidateRun) {
+      await this.delegate.runPrompt(execution);
+      return;
+    }
+
+    this.activeCandidateRuns += 1;
+    this.maxActiveCandidateRuns = Math.max(
+      this.maxActiveCandidateRuns,
+      this.activeCandidateRuns
+    );
+
+    try {
+      await delay(50);
+      await this.delegate.runPrompt(execution);
+    } finally {
+      this.activeCandidateRuns -= 1;
+    }
+  }
+}
+
+class ConcurrentVoteScorer extends FakeScorer {
+  public maxActiveVotes = 0;
+  private activeVotes = 0;
+
+  public override async runSingleVote(
+    input: Parameters<FakeScorer["runSingleVote"]>[0]
+  ) {
+    this.activeVotes += 1;
+    this.maxActiveVotes = Math.max(this.maxActiveVotes, this.activeVotes);
+
+    try {
+      await delay(50);
+      return await super.runSingleVote(input);
+    } finally {
+      this.activeVotes -= 1;
+    }
+  }
+}
+
 describe("orchestrator integration", () => {
   it("fails fast when baseline generation produces no artifacts", async () => {
     const workspaceRoot = await createWorkspaceCopy();
@@ -129,6 +201,50 @@ describe("orchestrator integration", () => {
     );
     expect(await readSkillVersion(workspaceRoot)).toBe(2);
     expect(state.incumbentPath).toBe("steps/1/candidates/0");
+  });
+
+  it("runs candidate generations concurrently", async () => {
+    const workspaceRoot = await createWorkspaceCopy();
+    const containerRunner = new ConcurrentCandidateRunner(workspaceRoot, {
+      candidateScores: {
+        "1:0": 2,
+        "1:1": 3
+      }
+    });
+
+    await runOrchestrator({
+      workspaceRoot,
+      options: {
+        candidateCount: 2,
+        maxSteps: 1
+      },
+      containerRunner,
+      scorer: new FakeScorer(workspaceRoot)
+    });
+
+    expect(containerRunner.maxActiveCandidateRuns).toBeGreaterThan(1);
+  });
+
+  it("runs candidate scoring concurrently after generation completes", async () => {
+    const workspaceRoot = await createWorkspaceCopy();
+    const scorer = new ConcurrentVoteScorer(workspaceRoot);
+
+    await runOrchestrator({
+      workspaceRoot,
+      options: {
+        candidateCount: 2,
+        maxSteps: 1
+      },
+      containerRunner: new FakeContainerRunner(workspaceRoot, {
+        candidateScores: {
+          "1:0": 2,
+          "1:1": 3
+        }
+      }),
+      scorer
+    });
+
+    expect(scorer.maxActiveVotes).toBeGreaterThan(1);
   });
 
   it("reverts skills when the incumbent wins", async () => {
