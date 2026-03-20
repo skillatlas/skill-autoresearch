@@ -57,11 +57,20 @@ export interface RunCliOptions {
   verbose: boolean;
 }
 
+export function resolveWorkspaceRoot(
+  workspaceArg: string | undefined,
+  invocationDirectory: string = process.cwd()
+): string {
+  return workspaceArg
+    ? path.resolve(invocationDirectory, workspaceArg)
+    : path.resolve(invocationDirectory);
+}
+
 export async function runCommand(
   workspaceArg: string | undefined,
   options: RunCliOptions
 ): Promise<void> {
-  const workspaceRoot = path.resolve(workspaceArg ?? process.cwd());
+  const workspaceRoot = resolveWorkspaceRoot(workspaceArg);
   const logger = new Logger(options.verbose);
   const workspace = new WorkspaceManager(workspaceRoot, logger);
   const rubric = await loadRubric(workspace.paths.rubricPath);

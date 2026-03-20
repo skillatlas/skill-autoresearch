@@ -1,6 +1,7 @@
 import fs from "fs-extra";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   ContainerExecution,
@@ -22,7 +23,11 @@ import {
 } from "../src/types/rubric.js";
 import { RunState } from "../src/types/state.js";
 
-const fixtureRoot = path.resolve("test/fixtures/manual-workspace");
+const fixtureRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "fixtures",
+  "manual-workspace"
+);
 
 export async function createWorkspaceCopy(): Promise<string> {
   const workspaceRoot = await fs.mkdtemp(
