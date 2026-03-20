@@ -1,4 +1,9 @@
-import { selectBestWinningCandidate, summarizeVotes } from "../src/core/scorer.js";
+import fs from "fs-extra";
+import os from "node:os";
+import path from "node:path";
+
+import { Logger } from "../src/core/logger.js";
+import { Scorer, selectBestWinningCandidate, summarizeVotes } from "../src/core/scorer.js";
 
 describe("scoring helpers", () => {
   it("aggregates candidate votes", () => {
@@ -35,5 +40,39 @@ describe("scoring helpers", () => {
     ]);
 
     expect(candidate?.index).toBe(1);
+  });
+
+  it("rejects image evidence when the file bytes are not an image", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "scorer-"));
+    await fs.ensureDir(path.join(workspaceRoot, "step"));
+    const scorer = new Scorer(
+      workspaceRoot,
+      new Logger(false),
+      {
+        async generateVote() {
+          throw new Error("generateVote should not be called in this test");
+        }
+      },
+      false
+    );
+
+    await expect(
+      scorer.collectEvidence(
+        {
+          sourcePath: "RUBRIC.md",
+          modelId: "test-model",
+          outputType: "image",
+          commands: [
+            {
+              command:
+                "node -e \"require('fs').writeFileSync(process.env.STEP_PATH + '/bad.png', 'not an image')\"",
+              resultPath: "$STEP_PATH/bad.png"
+            }
+          ],
+          prompt: "Judge screenshots."
+        },
+        "step"
+      )
+    ).rejects.toThrow("does not match the expected image/png format");
   });
 });

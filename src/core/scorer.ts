@@ -45,6 +45,38 @@ function inferImageMimeType(filePath: string): string {
   }
 }
 
+function assertImageBytesMatchMimeType(
+  filePath: string,
+  mimeType: string,
+  bytes: Buffer
+): void {
+  const matchesFormat =
+    (mimeType === "image/png" &&
+      bytes.length >= 8 &&
+      bytes.subarray(0, 8).equals(
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+      )) ||
+    (mimeType === "image/jpeg" &&
+      bytes.length >= 3 &&
+      bytes[0] === 0xff &&
+      bytes[1] === 0xd8 &&
+      bytes[2] === 0xff) ||
+    (mimeType === "image/gif" &&
+      bytes.length >= 6 &&
+      (bytes.subarray(0, 6).toString("ascii") === "GIF87a" ||
+        bytes.subarray(0, 6).toString("ascii") === "GIF89a")) ||
+    (mimeType === "image/webp" &&
+      bytes.length >= 12 &&
+      bytes.subarray(0, 4).toString("ascii") === "RIFF" &&
+      bytes.subarray(8, 12).toString("ascii") === "WEBP");
+
+  if (!matchesFormat) {
+    throw new Error(
+      `Image evidence at ${filePath} does not match the expected ${mimeType} format.`
+    );
+  }
+}
+
 export function summarizeVotes(
   votes: ReadonlyArray<ScoreVote | VoteRecord>
 ): CandidateComparison {
@@ -253,12 +285,14 @@ export class Scorer {
       if (bytes.length === 0) {
         throw new Error(`Image evidence is empty: ${imagePath}`);
       }
+      const mimeType = inferImageMimeType(imagePath);
+      assertImageBytesMatchMimeType(imagePath, mimeType, bytes);
 
       evidence.push({
         outputType: "image",
         label,
         path: imagePath,
-        mimeType: inferImageMimeType(imagePath),
+        mimeType,
         bytes
       });
     }

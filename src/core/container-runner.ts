@@ -1,3 +1,7 @@
+import fs from "node:fs";
+import path from "node:path";
+import { createRequire } from "node:module";
+
 import { execa } from "execa";
 
 import { Logger } from "./logger.js";
@@ -12,6 +16,42 @@ export interface ContainerRunner {
   runPrompt(execution: ContainerExecution): Promise<void>;
 }
 
+const require = createRequire(import.meta.url);
+
+let cachedContainerCliEntryPoint: string | undefined;
+
+export function resolveContainerCliEntryPoint(): string {
+  if (cachedContainerCliEntryPoint) {
+    return cachedContainerCliEntryPoint;
+  }
+
+  let packageJsonPath: string;
+  try {
+    packageJsonPath = require.resolve("@botanicastudios/code-container/package.json");
+  } catch {
+    throw new Error(
+      "Missing @botanicastudios/code-container. Install dependencies before running skill-autoresearch."
+    );
+  }
+
+  const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8")) as {
+    bin?: string | Record<string, string>;
+  };
+  const binPath =
+    typeof packageJson.bin === "string"
+      ? packageJson.bin
+      : packageJson.bin?.container;
+
+  if (!binPath) {
+    throw new Error(
+      "Unable to resolve the container CLI from @botanicastudios/code-container."
+    );
+  }
+
+  cachedContainerCliEntryPoint = path.resolve(path.dirname(packageJsonPath), binPath);
+  return cachedContainerCliEntryPoint;
+}
+
 export class CodeContainerRunner implements ContainerRunner {
   public constructor(
     private readonly workspaceRoot: string,
@@ -20,7 +60,9 @@ export class CodeContainerRunner implements ContainerRunner {
   ) {}
 
   public async runPrompt(execution: ContainerExecution): Promise<void> {
+    const containerCliEntryPoint = resolveContainerCliEntryPoint();
     const args = [
+      containerCliEntryPoint,
       "exec",
       execution.targetPath,
       "--",
@@ -31,10 +73,10 @@ export class CodeContainerRunner implements ContainerRunner {
 
     this.logger.phase(execution.label, { targetPath: execution.targetPath });
     if (this.verbose) {
-      this.logger.debug(`container ${args.join(" ")}`);
+      this.logger.debug(`node ${args.join(" ")}`);
     }
 
-    const result = await execa("container", args, {
+    const result = await execa(process.execPath, args, {
       cwd: this.workspaceRoot,
       all: true,
       reject: false

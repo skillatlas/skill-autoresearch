@@ -15,6 +15,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@botanicastudios/code-container": "^2.0.11",
     "@openrouter/ai-sdk-provider": "^0.7.5",
     "ai": "^4.3.19",
     "commander": "^13.1.0",
