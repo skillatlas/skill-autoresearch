@@ -17,6 +17,7 @@ export interface ContainerRunner {
 }
 
 const require = createRequire(import.meta.url);
+const FORWARDED_ENV_VARS = ["CLAUDE_CODE_OAUTH_TOKEN"] as const;
 
 let cachedContainerCliEntryPoint: string | undefined;
 
@@ -52,6 +53,30 @@ export function resolveContainerCliEntryPoint(): string {
   return cachedContainerCliEntryPoint;
 }
 
+export function buildContainerExecArgs(
+  containerCliEntryPoint: string,
+  execution: ContainerExecution,
+  env: NodeJS.ProcessEnv = process.env
+): string[] {
+  const args = [containerCliEntryPoint, "exec"];
+
+  for (const envVarName of FORWARDED_ENV_VARS) {
+    if (env[envVarName]) {
+      args.push("--env", envVarName);
+    }
+  }
+
+  args.push(
+    execution.targetPath,
+    "--",
+    "claude",
+    "-p",
+    execution.prompt
+  );
+
+  return args;
+}
+
 export class CodeContainerRunner implements ContainerRunner {
   public constructor(
     private readonly workspaceRoot: string,
@@ -61,15 +86,7 @@ export class CodeContainerRunner implements ContainerRunner {
 
   public async runPrompt(execution: ContainerExecution): Promise<void> {
     const containerCliEntryPoint = resolveContainerCliEntryPoint();
-    const args = [
-      containerCliEntryPoint,
-      "exec",
-      execution.targetPath,
-      "--",
-      "claude",
-      "-p",
-      execution.prompt
-    ];
+    const args = buildContainerExecArgs(containerCliEntryPoint, execution);
 
     this.logger.phase(execution.label, { targetPath: execution.targetPath });
     if (this.verbose) {
