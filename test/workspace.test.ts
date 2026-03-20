@@ -3,37 +3,51 @@ import path from "node:path";
 
 import { Logger } from "../src/core/logger.js";
 import { WorkspaceManager } from "../src/core/workspace.js";
-import { createWorkspaceCopy } from "./helpers.js";
+import { createWorkspaceCopy, readSkillVersion } from "./helpers.js";
 
-describe("workspace symlinks", () => {
-  it("creates missing skill symlinks", async () => {
+describe("workspace sandboxes", () => {
+  it("creates generation-local skill links and cleans them up", async () => {
     const workspaceRoot = await createWorkspaceCopy();
     const workspace = new WorkspaceManager(workspaceRoot, new Logger(false));
+    const candidateDir = path.join(workspaceRoot, "steps", "1", "candidates", "0");
 
-    await workspace.ensureSkillSymlinks();
+    await fs.ensureDir(candidateDir);
+    const sandbox = await workspace.createGenerationSandbox(candidateDir);
 
-    const claudeLink = path.join(workspaceRoot, ".claude", "skills");
-    const agentsLink = path.join(workspaceRoot, ".agents", "skills");
+    const claudeLink = path.join(candidateDir, ".claude", "skills");
+    const agentsLink = path.join(candidateDir, ".agents", "skills");
+    expect(sandbox.containerRoot).toBe(candidateDir);
+    expect(sandbox.targetPath).toBe(candidateDir);
     expect((await fs.lstat(claudeLink)).isSymbolicLink()).toBe(true);
     expect((await fs.lstat(agentsLink)).isSymbolicLink()).toBe(true);
     expect(path.resolve(path.dirname(claudeLink), await fs.readlink(claudeLink))).toBe(
-      path.join(workspaceRoot, "skills")
+      path.join(candidateDir, "skills")
     );
     expect(path.resolve(path.dirname(agentsLink), await fs.readlink(agentsLink))).toBe(
-      path.join(workspaceRoot, "skills")
+      path.join(candidateDir, "skills")
     );
+
+    await sandbox.cleanup();
+
+    expect(await fs.pathExists(path.join(candidateDir, "skills"))).toBe(false);
+    expect(await fs.pathExists(path.join(candidateDir, ".claude"))).toBe(false);
+    expect(await fs.pathExists(path.join(candidateDir, ".agents"))).toBe(false);
   });
 
-  it("fails when an existing symlink points somewhere else", async () => {
+  it("applies mutation sandbox changes back to workspace skills", async () => {
     const workspaceRoot = await createWorkspaceCopy();
-    await fs.ensureDir(path.join(workspaceRoot, ".claude"));
-    await fs.symlink("../archive", path.join(workspaceRoot, ".claude", "skills"), "dir");
-
     const workspace = new WorkspaceManager(workspaceRoot, new Logger(false));
+    const sandbox = await workspace.createMutationSandbox(1);
 
-    await expect(workspace.ensureSkillSymlinks()).rejects.toThrow(
-      ".claude/skills points to ../archive"
+    await fs.writeFile(
+      path.join(sandbox.targetPath, "demo", "SKILL.md"),
+      "version=4\n",
+      "utf8"
     );
+    await sandbox.applyChanges();
+    await sandbox.cleanup();
+
+    expect(await readSkillVersion(workspaceRoot)).toBe(4);
   });
 
   it("tracks .env and source inputs from the workspace root", async () => {

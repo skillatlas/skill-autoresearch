@@ -19,6 +19,16 @@ export interface WorkspacePaths {
   statePath: string;
 }
 
+export interface ExecutionSandbox {
+  containerRoot: string;
+  targetPath: string;
+  cleanup(): Promise<void>;
+}
+
+export interface MutationSandbox extends ExecutionSandbox {
+  applyChanges(): Promise<void>;
+}
+
 function normalizeRelative(relativePath: string): string {
   return relativePath.split(path.sep).join("/");
 }
@@ -69,47 +79,45 @@ export class WorkspaceManager {
     await fs.ensureDir(this.paths.logsDir);
   }
 
-  public async ensureSkillSymlinks(options?: {
-    dryRun?: boolean;
-  }): Promise<void> {
-    const dryRun = options?.dryRun ?? false;
-    const linkPaths = [
-      path.join(this.root, ".claude", "skills"),
-      path.join(this.root, ".agents", "skills")
-    ];
+  public async createGenerationSandbox(targetPath: string): Promise<ExecutionSandbox> {
+    await fs.ensureDir(targetPath);
+    const sandboxSkillsPath = path.join(targetPath, "skills");
+    await fs.copy(this.paths.skillsDir, sandboxSkillsPath);
+    await this.createSandboxSkillLinks(targetPath, sandboxSkillsPath);
 
-    for (const linkPath of linkPaths) {
-      const expectedTarget = path.relative(path.dirname(linkPath), this.paths.skillsDir);
-      const exists = await fs.pathExists(linkPath);
-
-      if (!exists) {
-        if (dryRun) {
-          this.logger.info(
-            `[dry-run] Would create symlink ${this.relativeToRoot(linkPath)} -> ${expectedTarget}`
-          );
-          continue;
-        }
-
-        await fs.ensureDir(path.dirname(linkPath));
-        await fs.symlink(expectedTarget, linkPath, "dir");
-        continue;
+    return {
+      containerRoot: targetPath,
+      targetPath,
+      cleanup: async () => {
+        await this.cleanupSandboxRoot(targetPath);
       }
+    };
+  }
 
-      const stats = await fs.lstat(linkPath);
-      if (!stats.isSymbolicLink()) {
-        throw new Error(
-          `${this.relativeToRoot(linkPath)} exists but is not the expected symlink to ./skills.`
-        );
-      }
+  public async createMutationSandbox(stepIndex: number): Promise<MutationSandbox> {
+    const sandboxRoot = path.join(
+      this.paths.runtimeDir,
+      "sandboxes",
+      `mutation-step-${stepIndex}-${Date.now()}-${Math.random()
+        .toString(16)
+        .slice(2)}`
+    );
+    const sandboxSkillsPath = path.join(sandboxRoot, "skills");
 
-      const actualTarget = await fs.readlink(linkPath);
-      const actualResolved = path.resolve(path.dirname(linkPath), actualTarget);
-      if (actualResolved !== this.paths.skillsDir) {
-        throw new Error(
-          `${this.relativeToRoot(linkPath)} points to ${actualTarget}, expected ${expectedTarget}.`
-        );
+    await fs.ensureDir(sandboxRoot);
+    await fs.copy(this.paths.skillsDir, sandboxSkillsPath);
+    await this.createSandboxSkillLinks(sandboxRoot, sandboxSkillsPath);
+
+    return {
+      containerRoot: sandboxRoot,
+      targetPath: sandboxSkillsPath,
+      applyChanges: async () => {
+        await this.replaceDirectoryFromSource(sandboxSkillsPath, this.paths.skillsDir);
+      },
+      cleanup: async () => {
+        await fs.remove(sandboxRoot);
       }
-    }
+    };
   }
 
   public async archiveExistingSteps(
@@ -183,6 +191,29 @@ export class WorkspaceManager {
 
   public async readPrompt(promptPath: string): Promise<string> {
     return fs.readFile(promptPath, "utf8");
+  }
+
+  private async createSandboxSkillLinks(
+    rootPath: string,
+    sandboxSkillsPath: string
+  ): Promise<void> {
+    const linkPaths = [
+      path.join(rootPath, ".claude", "skills"),
+      path.join(rootPath, ".agents", "skills")
+    ];
+
+    for (const linkPath of linkPaths) {
+      const expectedTarget = path.relative(path.dirname(linkPath), sandboxSkillsPath);
+      await fs.ensureDir(path.dirname(linkPath));
+      await fs.remove(linkPath);
+      await fs.symlink(expectedTarget, linkPath, "dir");
+    }
+  }
+
+  private async cleanupSandboxRoot(rootPath: string): Promise<void> {
+    await fs.remove(path.join(rootPath, "skills"));
+    await fs.remove(path.join(rootPath, ".claude"));
+    await fs.remove(path.join(rootPath, ".agents"));
   }
 
   private async replaceDirectoryFromSource(

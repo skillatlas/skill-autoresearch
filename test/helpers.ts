@@ -91,14 +91,14 @@ export class FakeContainerRunner implements ContainerRunner {
       throw new Error("Injected container failure");
     }
 
-    if (relativeTarget === "skills") {
+    if (execution.label.startsWith("Skill mutation for step ")) {
       const nextVersion =
         this.options.mutationVersions?.[this.mutationCalls] ??
         extractCurrentSkillVersion(this.workspaceRoot) + 1;
       this.mutationCalls += 1;
 
       await fs.writeFile(
-        path.join(this.workspaceRoot, "skills", "demo", "SKILL.md"),
+        path.join(execution.targetPath, "demo", "SKILL.md"),
         `version=${nextVersion}\n`,
         "utf8"
       );
