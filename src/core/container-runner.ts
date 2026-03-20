@@ -7,6 +7,7 @@ import { execa } from "execa";
 import { Logger } from "./logger.js";
 
 export interface ContainerExecution {
+  containerRoot: string;
   targetPath: string;
   prompt: string;
   label: string;
@@ -78,12 +79,11 @@ export function resolveContainerCliEntryPoint(): string {
 
 export function buildContainerExecArgs(
   containerCliEntryPoint: string,
-  workspaceRoot: string,
   execution: ContainerExecution,
   env: NodeJS.ProcessEnv = process.env
 ): string[] {
   const containerTargetPath = resolveTargetPathWithinWorkspace(
-    workspaceRoot,
+    execution.containerRoot,
     execution.targetPath
   );
   const args = [containerCliEntryPoint, "exec"];
@@ -95,7 +95,7 @@ export function buildContainerExecArgs(
   }
 
   args.push(
-    workspaceRoot,
+    execution.containerRoot,
     "--",
     "bash",
     "-lc",
@@ -117,11 +117,7 @@ export class CodeContainerRunner implements ContainerRunner {
 
   public async runPrompt(execution: ContainerExecution): Promise<void> {
     const containerCliEntryPoint = resolveContainerCliEntryPoint();
-    const args = buildContainerExecArgs(
-      containerCliEntryPoint,
-      this.workspaceRoot,
-      execution
-    );
+    const args = buildContainerExecArgs(containerCliEntryPoint, execution);
 
     this.logger.phase(execution.label, { targetPath: execution.targetPath });
     if (this.verbose) {

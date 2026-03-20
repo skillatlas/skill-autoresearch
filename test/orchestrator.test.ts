@@ -113,9 +113,9 @@ describe("orchestrator integration", () => {
         },
         containerRunner: {
           async runPrompt(execution) {
-            if (execution.targetPath === path.join(workspaceRoot, "skills")) {
+            if (execution.label.startsWith("Skill mutation for step ")) {
               await fs.writeFile(
-                path.join(workspaceRoot, "skills", "demo", "SKILL.md"),
+                path.join(execution.targetPath, "demo", "SKILL.md"),
                 "version=1\n",
                 "utf8"
               );

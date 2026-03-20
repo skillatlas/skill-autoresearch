@@ -19,8 +19,8 @@ describe("container runner", () => {
   it("includes the Claude OAuth token env flag when present", () => {
     const args = buildContainerExecArgs(
       "/tmp/container.js",
-      "/tmp/project",
       {
+        containerRoot: "/tmp/project",
         targetPath: "/tmp/project/steps/0/baseline",
         prompt: "Generate",
         label: "Baseline generation"
@@ -49,8 +49,8 @@ describe("container runner", () => {
   it("omits the Claude OAuth token env flag when absent", () => {
     const args = buildContainerExecArgs(
       "/tmp/container.js",
-      "/tmp/project",
       {
+        containerRoot: "/tmp/project",
         targetPath: "/tmp/project/steps/0/baseline",
         prompt: "Generate",
         label: "Baseline generation"
@@ -72,12 +72,38 @@ describe("container runner", () => {
     ]);
   });
 
+  it("uses the sandbox root when the target path is the container root", () => {
+    const args = buildContainerExecArgs(
+      "/tmp/container.js",
+      {
+        containerRoot: "/tmp/project/steps/0/baseline",
+        targetPath: "/tmp/project/steps/0/baseline",
+        prompt: "Generate",
+        label: "Baseline generation"
+      },
+      {}
+    );
+
+    expect(args).toEqual([
+      "/tmp/container.js",
+      "exec",
+      "/tmp/project/steps/0/baseline",
+      "--",
+      "bash",
+      "-lc",
+      'cd "$1" && claude -p "$2"',
+      "bash",
+      ".",
+      "Generate"
+    ]);
+  });
+
   it("fails when the target path is outside the workspace", () => {
     expect(() =>
       buildContainerExecArgs(
         "/tmp/container.js",
-        "/tmp/project",
         {
+          containerRoot: "/tmp/project",
           targetPath: "/tmp/elsewhere",
           prompt: "Generate",
           label: "Baseline generation"

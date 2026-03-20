@@ -142,8 +142,6 @@ export class Orchestrator {
   }
 
   private async initializeState(): Promise<RunState> {
-    await this.workspace.ensureSkillSymlinks();
-
     if (this.options.resume) {
       if (!(await this.stateStore.exists())) {
         throw new Error("Cannot resume: .skill-autoresearch/state.json does not exist.");
@@ -175,7 +173,6 @@ export class Orchestrator {
 
   private async runDryRun(): Promise<void> {
     const previewRunId = createRunId(this.now());
-    await this.workspace.ensureSkillSymlinks({ dryRun: true });
     const archivePath = await this.workspace.archiveExistingSteps(previewRunId, {
       dryRun: true
     });
@@ -197,12 +194,18 @@ export class Orchestrator {
   private async generateBaseline(state: RunState): Promise<RunState> {
     const baselineDir = path.join(this.workspace.paths.stepsDir, "0", "baseline");
     await this.workspace.resetDirectory(baselineDir);
+    const sandbox = await this.workspace.createGenerationSandbox(baselineDir);
 
-    await this.containerRunner.runPrompt({
-      targetPath: baselineDir,
-      prompt: await this.workspace.readPrompt(this.workspace.paths.generationPath),
-      label: "Baseline generation"
-    });
+    try {
+      await this.containerRunner.runPrompt({
+        containerRoot: sandbox.containerRoot,
+        targetPath: sandbox.targetPath,
+        prompt: await this.workspace.readPrompt(this.workspace.paths.generationPath),
+        label: "Baseline generation"
+      });
+    } finally {
+      await sandbox.cleanup();
+    }
     await this.workspace.assertDirectoryContainsFiles(baselineDir, "Baseline generation");
 
     await this.workspace.snapshotSkills("original");
@@ -231,12 +234,19 @@ export class Orchestrator {
 
   private async mutateSkills(state: RunState): Promise<RunState> {
     await this.workspace.restoreSkillsFromPrevious();
+    const sandbox = await this.workspace.createMutationSandbox(state.stepIndex);
 
-    await this.containerRunner.runPrompt({
-      targetPath: this.workspace.paths.skillsDir,
-      prompt: await this.workspace.readPrompt(this.workspace.paths.instructionsPath),
-      label: `Skill mutation for step ${state.stepIndex}`
-    });
+    try {
+      await this.containerRunner.runPrompt({
+        containerRoot: sandbox.containerRoot,
+        targetPath: sandbox.targetPath,
+        prompt: await this.workspace.readPrompt(this.workspace.paths.instructionsPath),
+        label: `Skill mutation for step ${state.stepIndex}`
+      });
+      await sandbox.applyChanges();
+    } finally {
+      await sandbox.cleanup();
+    }
 
     state.activeCandidates = Array.from({ length: state.candidateCount }, (_, index) => {
       const candidateDir = path.join(
@@ -269,11 +279,18 @@ export class Orchestrator {
     await this.runInParallel(pendingCandidates, async (candidate) => {
       const candidateDir = this.workspace.resolveWorkspacePath(candidate.path);
       await this.workspace.resetDirectory(candidateDir);
-      await this.containerRunner.runPrompt({
-        targetPath: candidateDir,
-        prompt,
-        label: `Candidate generation for step ${state.stepIndex}/${candidate.index}`
-      });
+      const sandbox = await this.workspace.createGenerationSandbox(candidateDir);
+
+      try {
+        await this.containerRunner.runPrompt({
+          containerRoot: sandbox.containerRoot,
+          targetPath: sandbox.targetPath,
+          prompt,
+          label: `Candidate generation for step ${state.stepIndex}/${candidate.index}`
+        });
+      } finally {
+        await sandbox.cleanup();
+      }
       await this.workspace.assertDirectoryContainsFiles(
         candidateDir,
         `Candidate generation for step ${state.stepIndex}/${candidate.index}`
