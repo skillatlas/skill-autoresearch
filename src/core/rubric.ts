@@ -10,6 +10,7 @@ import {
 
 const rawRubricFrontmatterSchema = z
   .object({
+    provider: z.enum(["openrouter", "codex"]).optional(),
     model: z.string().min(1),
     outputType: z.enum(["text", "image"]),
     command: z.string().min(1).optional(),
@@ -76,6 +77,7 @@ export async function loadRubric(rubricPath: string): Promise<NormalizedRubric> 
 
   return normalizedRubricSchema.parse({
     sourcePath: rubricPath,
+    provider: frontmatter.provider ?? "openrouter",
     modelId: frontmatter.model,
     outputType: frontmatter.outputType,
     commands,

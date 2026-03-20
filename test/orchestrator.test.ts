@@ -193,6 +193,29 @@ describe("orchestrator integration", () => {
     expect(resumeScorer.voteCalls).toBe(2);
   });
 
+  it("persists and reuses the scoring provider override", async () => {
+    const workspaceRoot = await createWorkspaceCopy();
+    const scorer = new FakeScorer(workspaceRoot);
+
+    await runOrchestrator({
+      workspaceRoot,
+      options: {
+        maxSteps: 1,
+        scoringProviderOverride: "codex"
+      },
+      containerRunner: new FakeContainerRunner(workspaceRoot, {
+        candidateScores: {
+          "1:0": 1
+        }
+      }),
+      scorer
+    });
+
+    const state = await readRunState(workspaceRoot);
+    expect(state.scoringProviderOverride).toBe("codex");
+    expect(scorer.providers).toEqual(["codex"]);
+  });
+
   it("honors min-steps before stasis termination", async () => {
     const workspaceRoot = await createWorkspaceCopy();
 
