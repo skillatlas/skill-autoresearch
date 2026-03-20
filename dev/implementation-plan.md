@@ -35,7 +35,9 @@ Initial flags:
 
 - `--candidates <n>`: number of generation candidates per step, default `1`
 - `--votes <n>`: number of scoring passes per comparison, default `1`
-- `--max-iterations <n>`: optional stop condition
+- `--min-steps <n>`: minimum number of mutation iterations before termination is allowed, default `0`
+- `--max-steps <n>`: hard cap on mutation iterations
+- `--stasis-steps <n>`: terminate after this many consecutive rejected mutation iterations
 - `--resume`: resume existing run state instead of starting fresh
 - `--model <id>`: optional override for rubric frontmatter model
 - `--dry-run`: validate inputs and print planned actions without running agents
@@ -126,6 +128,10 @@ Recommended shape:
   "stepIndex": 0,
   "candidateCount": 1,
   "voteCount": 1,
+  "minSteps": 0,
+  "maxSteps": 20,
+  "stasisSteps": 5,
+  "consecutiveRejections": 0,
   "archivePath": "archive/2026-03-20T19-57-00Z",
   "skillsOriginalPath": "skills-original",
   "skillsPreviousPath": "skills-previous",
@@ -219,7 +225,12 @@ For each candidate `i` in `[0, candidates)`:
    - system: rubric body
    - user message A: incumbent evidence labeled candidate A
    - user message B: candidate evidence labeled candidate B
-5. Aggregate votes and select the winning candidate.
+5. Mark a candidate as a comparison winner only if candidate B receives more than 50% of votes for that candidate.
+6. Mark the mutated skill as a step winner only if more than 50% of generated candidates are comparison winners.
+7. If the mutated skill wins, promote the strongest winning candidate artifact set as the new incumbent for the next step. Recommended tie-break order:
+   - highest vote count for B
+   - highest average confidence when available
+   - lowest candidate index for deterministic behavior
 
 Recommended structured output schema:
 
@@ -233,12 +244,13 @@ z.object({
 
 ### Phase F. Promote or revert
 
-1. If the best candidate beats the incumbent, keep current `skills/`, mark the candidate output as the new incumbent, increment `stepIndex`, and loop back to Phase C.
-2. If the incumbent wins, replace `skills/` with `skills-previous/`, still increment `stepIndex`, and loop back to Phase C.
+1. If more than 50% of candidates beat the incumbent, keep current `skills/`, promote the strongest winning candidate output as the new incumbent artifact set, reset the rejection streak, increment `stepIndex`, and loop back to Phase C.
+2. If 50% or fewer candidates beat the incumbent, replace `skills/` with `skills-previous/`, increment the rejection streak, increment `stepIndex`, and loop back to Phase C.
 
 Stopping conditions:
 
-- `--max-iterations` reached
+- `--max-steps` reached
+- `--stasis-steps` reached after at least `--min-steps`
 - fatal child process failure
 - invalid rubric command output
 - manual interruption
@@ -270,11 +282,41 @@ resultPath: "$STEP_PATH/__score.png"
 
 Implementation recommendation:
 
-- support one command per rubric first
+- support either a single command object or an array of command objects in frontmatter
 - support `resultPath` for commands that write files rather than stdout
+- normalize both forms to an internal `commands[]` representation before execution
 - require frontmatter keys explicitly and fail if missing
 
-Do not try to support arbitrary multi-step pipelines in v1. If richer evidence collection is needed later, add a list-based command spec in a backward-compatible way.
+Recommended normalized frontmatter:
+
+```md
+---
+model: openai/gpt-4.1
+outputType: text
+commands:
+  - command: cat "$STEP_PATH/index.html"
+---
+```
+
+Array example:
+
+```md
+---
+model: anthropic/claude-3.7-sonnet
+outputType: image
+commands:
+  - command: playwright-cli serve-and-screenshot "$STEP_PATH/index.html" "$STEP_PATH/hero.png"
+    resultPath: "$STEP_PATH/hero.png"
+  - command: playwright-cli serve-and-screenshot "$STEP_PATH/about.html" "$STEP_PATH/about.png"
+    resultPath: "$STEP_PATH/about.png"
+---
+```
+
+Keep v1 strict even with array support:
+
+- all commands in one rubric must use the same `outputType`
+- each command must resolve to exactly one evidence item
+- execution order is preserved
 
 ## Package and runtime choices
 
@@ -350,6 +392,7 @@ Resume behavior:
 ### Unit tests
 
 - rubric frontmatter parsing
+- single-command and multi-command rubric normalization
 - `$STEP_PATH` interpolation
 - state transition validation
 - vote aggregation
@@ -363,6 +406,9 @@ Resume behavior:
 - resume after interruption during scoring
 - revert flow when incumbent wins
 - promotion flow when candidate wins
+- stasis termination after rejection streak
+- min-step gating before stasis termination
+- multi-candidate majority acceptance
 
 Mock external processes in integration tests. Do not require Docker, Claude, or OpenRouter for the default test suite.
 
@@ -389,6 +435,7 @@ This should prove the loop and state persistence before wiring real agent calls.
 - implement candidate generation layout
 - implement rubric parsing and evidence command execution
 - implement OpenRouter scoring with `generateObject`
+- implement candidate-majority and vote-majority decision rules
 
 ### Phase 3
 
@@ -404,16 +451,12 @@ This should prove the loop and state persistence before wiring real agent calls.
 - each iteration snapshots `skills/` before mutation
 - multiple candidates per step are supported
 - multiple scoring votes per candidate are supported
-- the winning candidate is selected reproducibly from recorded votes
+- a candidate only counts as a winner if it receives more than 50% of scoring votes
+- a mutated skill version only counts as a winner if more than 50% of candidates are winners
+- the promoted incumbent artifact is selected deterministically from winning candidates
 - `skills/` is reverted to `skills-previous/` when the incumbent wins
+- the run respects `--min-steps`, `--max-steps`, and `--stasis-steps`
 - an interrupted run can resume from persisted state without redoing completed phases
-
-## Open questions
-
-1. Should the loop stop after a rejected mutation streak, or is it intentionally unbounded until interrupted or `--max-iterations` is reached?
-2. Should scoring compare every new candidate only against the incumbent, or should it also run a tournament across candidates before the incumbent comparison?
-3. Should `container exec` target the workspace root and pass the output directory as an argument, or should it execute directly against the output directory paths as described above?
-4. Should the rubric frontmatter support only one evidence command in v1, or do you already want an array of commands with multiple attachments per candidate?
 
 ## Next step
 
