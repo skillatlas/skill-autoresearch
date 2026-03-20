@@ -1,0 +1,243 @@
+import fs from "fs-extra";
+import path from "node:path";
+
+import { Logger } from "./logger.js";
+
+export interface WorkspacePaths {
+  root: string;
+  instructionsPath: string;
+  generationPath: string;
+  rubricPath: string;
+  envPath: string;
+  skillsDir: string;
+  stepsDir: string;
+  archiveDir: string;
+  skillsOriginalDir: string;
+  skillsPreviousDir: string;
+  runtimeDir: string;
+  logsDir: string;
+  statePath: string;
+}
+
+function normalizeRelative(relativePath: string): string {
+  return relativePath.split(path.sep).join("/");
+}
+
+export class WorkspaceManager {
+  public readonly root: string;
+  public readonly paths: WorkspacePaths;
+
+  public constructor(root: string, private readonly logger: Logger) {
+    this.root = path.resolve(root);
+    this.paths = {
+      root: this.root,
+      instructionsPath: path.join(this.root, "INSTRUCTIONS.md"),
+      generationPath: path.join(this.root, "GENERATION.md"),
+      rubricPath: path.join(this.root, "RUBRIC.md"),
+      envPath: path.join(this.root, ".env"),
+      skillsDir: path.join(this.root, "skills"),
+      stepsDir: path.join(this.root, "steps"),
+      archiveDir: path.join(this.root, "archive"),
+      skillsOriginalDir: path.join(this.root, "skills-original"),
+      skillsPreviousDir: path.join(this.root, "skills-previous"),
+      runtimeDir: path.join(this.root, ".skill-autoresearch"),
+      logsDir: path.join(this.root, ".skill-autoresearch", "logs"),
+      statePath: path.join(this.root, ".skill-autoresearch", "state.json")
+    };
+  }
+
+  public relativeToRoot(targetPath: string): string {
+    return normalizeRelative(path.relative(this.root, targetPath));
+  }
+
+  public resolveWorkspacePath(relativePath: string): string {
+    return path.resolve(this.root, relativePath);
+  }
+
+  public async validateSourceInputs(): Promise<void> {
+    await this.ensureRequiredFile(this.paths.instructionsPath);
+    await this.ensureRequiredFile(this.paths.generationPath);
+    await this.ensureRequiredFile(this.paths.rubricPath);
+    await this.ensureRequiredDirectory(this.paths.skillsDir);
+    await this.ensureRequiredDirectory(this.paths.stepsDir);
+    await this.ensureRequiredDirectory(this.paths.archiveDir);
+    await this.ensureSkillFolders();
+  }
+
+  public async prepareRuntimeDirs(): Promise<void> {
+    await fs.ensureDir(this.paths.runtimeDir);
+    await fs.ensureDir(this.paths.logsDir);
+  }
+
+  public async ensureSkillSymlinks(options?: {
+    dryRun?: boolean;
+  }): Promise<void> {
+    const dryRun = options?.dryRun ?? false;
+    const linkPaths = [
+      path.join(this.root, ".claude", "skills"),
+      path.join(this.root, ".agents", "skills")
+    ];
+
+    for (const linkPath of linkPaths) {
+      const expectedTarget = path.relative(path.dirname(linkPath), this.paths.skillsDir);
+      const exists = await fs.pathExists(linkPath);
+
+      if (!exists) {
+        if (dryRun) {
+          this.logger.info(
+            `[dry-run] Would create symlink ${this.relativeToRoot(linkPath)} -> ${expectedTarget}`
+          );
+          continue;
+        }
+
+        await fs.ensureDir(path.dirname(linkPath));
+        await fs.symlink(expectedTarget, linkPath, "dir");
+        continue;
+      }
+
+      const stats = await fs.lstat(linkPath);
+      if (!stats.isSymbolicLink()) {
+        throw new Error(
+          `${this.relativeToRoot(linkPath)} exists but is not the expected symlink to ./skills.`
+        );
+      }
+
+      const actualTarget = await fs.readlink(linkPath);
+      const actualResolved = path.resolve(path.dirname(linkPath), actualTarget);
+      if (actualResolved !== this.paths.skillsDir) {
+        throw new Error(
+          `${this.relativeToRoot(linkPath)} points to ${actualTarget}, expected ${expectedTarget}.`
+        );
+      }
+    }
+  }
+
+  public async archiveExistingSteps(
+    runId: string,
+    options?: { dryRun?: boolean }
+  ): Promise<string> {
+    const dryRun = options?.dryRun ?? false;
+    const archiveTarget = path.join(this.paths.archiveDir, runId);
+    const relativeArchiveTarget = this.relativeToRoot(archiveTarget);
+    const entries = await fs.readdir(this.paths.stepsDir);
+
+    if (entries.length === 0) {
+      return relativeArchiveTarget;
+    }
+
+    if (dryRun) {
+      this.logger.info(
+        `[dry-run] Would archive ${entries.length} step entr${entries.length === 1 ? "y" : "ies"} to ${relativeArchiveTarget}`
+      );
+      return relativeArchiveTarget;
+    }
+
+    await fs.ensureDir(archiveTarget);
+    for (const entry of entries) {
+      await fs.move(
+        path.join(this.paths.stepsDir, entry),
+        path.join(archiveTarget, entry),
+        { overwrite: true }
+      );
+    }
+
+    return relativeArchiveTarget;
+  }
+
+  public async snapshotSkills(kind: "original" | "previous"): Promise<void> {
+    const destination =
+      kind === "original"
+        ? this.paths.skillsOriginalDir
+        : this.paths.skillsPreviousDir;
+
+    await this.replaceDirectoryFromSource(this.paths.skillsDir, destination);
+  }
+
+  public async restoreSkillsFromPrevious(): Promise<void> {
+    await this.replaceDirectoryFromSource(
+      this.paths.skillsPreviousDir,
+      this.paths.skillsDir
+    );
+  }
+
+  public async resetDirectory(targetPath: string): Promise<void> {
+    await fs.emptyDir(targetPath);
+  }
+
+  public async ensureDirectory(targetPath: string): Promise<void> {
+    await fs.ensureDir(targetPath);
+  }
+
+  public async readPrompt(promptPath: string): Promise<string> {
+    return fs.readFile(promptPath, "utf8");
+  }
+
+  private async replaceDirectoryFromSource(
+    sourcePath: string,
+    destinationPath: string
+  ): Promise<void> {
+    const tempPath = path.join(
+      this.paths.runtimeDir,
+      `.tmp-${path.basename(destinationPath)}-${Date.now()}-${Math.random()
+        .toString(16)
+        .slice(2)}`
+    );
+
+    await fs.remove(tempPath);
+    await fs.copy(sourcePath, tempPath);
+    await fs.move(tempPath, destinationPath, { overwrite: true });
+  }
+
+  private async ensureRequiredFile(filePath: string): Promise<void> {
+    const exists = await fs.pathExists(filePath);
+    if (!exists) {
+      throw new Error(`Missing required file: ${this.relativeToRoot(filePath)}`);
+    }
+
+    const stats = await fs.stat(filePath);
+    if (!stats.isFile()) {
+      throw new Error(`Expected file: ${this.relativeToRoot(filePath)}`);
+    }
+  }
+
+  private async ensureRequiredDirectory(directoryPath: string): Promise<void> {
+    const exists = await fs.pathExists(directoryPath);
+    if (!exists) {
+      throw new Error(
+        `Missing required directory: ${this.relativeToRoot(directoryPath)}`
+      );
+    }
+
+    const stats = await fs.stat(directoryPath);
+    if (!stats.isDirectory()) {
+      throw new Error(`Expected directory: ${this.relativeToRoot(directoryPath)}`);
+    }
+  }
+
+  private async ensureSkillFolders(): Promise<void> {
+    const entries = await fs.readdir(this.paths.skillsDir);
+    const skillDirectories: string[] = [];
+
+    for (const entry of entries) {
+      const entryPath = path.join(this.paths.skillsDir, entry);
+      const stats = await fs.stat(entryPath);
+      if (stats.isDirectory()) {
+        skillDirectories.push(entryPath);
+      }
+    }
+
+    if (skillDirectories.length === 0) {
+      throw new Error("Expected at least one skill folder inside skills/.");
+    }
+
+    for (const skillDirectory of skillDirectories) {
+      const skillPath = path.join(skillDirectory, "SKILL.md");
+      const hasSkillFile = await fs.pathExists(skillPath);
+      if (!hasSkillFile) {
+        throw new Error(
+          `Missing SKILL.md in skill folder ${this.relativeToRoot(skillDirectory)}.`
+        );
+      }
+    }
+  }
+}
