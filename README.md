@@ -146,6 +146,8 @@ Build a landing page for a fictional company called "Acme Corp". Include a hero,
 
 The `harness` field controls which coding agent runs inside the container (`claude` or `codex`). The markdown body is the prompt.
 
+You can also add multiple generation prompts at the workspace root using numbered files such as `GENERATION1.md`, `GENERATION2.md`, and `GENERATION3.md`. When multiple generation files are present, the runner executes all of them in filename order for the baseline and for every candidate, then aggregates scoring across the full set.
+
 ### `RUBRIC.md`
 
 Defines how generated artifacts are scored. Uses YAML frontmatter for configuration and markdown body for evaluation criteria:
@@ -178,6 +180,8 @@ You are a design critic evaluating two HTML pages. Score them on visual identity
 | `commands[].command` | Shell command to produce evidence, or a built-in rubric helper such as `capture-screenshot` (optional — omit to read the file directly) |
 | `commands[].resultPath` | Path to the evidence file. `$STEP_PATH` is replaced at runtime. |
 
+Rubric commands also receive `$RUBRIC_RUN_ID`, a unique identifier for that evidence-collection pass. Use it for tool-level session names when commands may run concurrently.
+
 ### `skills/<name>/SKILL.md`
 
 The skill file that gets iteratively improved. You can have multiple skill folders — each must contain a `SKILL.md`. This is the file the mutate phase edits.
@@ -186,7 +190,7 @@ The skill file that gets iteratively improved. You can have multiple skill folde
 
 ### `skill-autoresearch bootstrap [workspace]`
 
-Scaffold a new workspace with sample `INSTRUCTIONS.md`, `GENERATION.md`, `RUBRIC.md`, and `skills/` directory. Skips any file that already exists.
+Scaffold a new workspace with sample `INSTRUCTIONS.md`, `GENERATION.md`, `RUBRIC.md`, and `skills/` directory. Skips any file that already exists. You can duplicate and rename `GENERATION.md` later if you want multiple numbered generation prompts.
 
 ### `skill-autoresearch run [workspace] [options]`
 
