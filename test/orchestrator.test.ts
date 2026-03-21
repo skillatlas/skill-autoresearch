@@ -145,14 +145,21 @@ describe("orchestrator integration", () => {
     );
   });
 
-  it("generates the baseline even when max-steps is zero", async () => {
+  it("treats max-steps zero as disabled", async () => {
     const workspaceRoot = await createWorkspaceCopy();
-    const containerRunner = new FakeContainerRunner(workspaceRoot);
+    const containerRunner = new FakeContainerRunner(workspaceRoot, {
+      candidateScores: {
+        "1:0": 0
+      }
+    });
 
     await runOrchestrator({
       workspaceRoot,
       options: {
-        maxSteps: 0
+        candidateCount: 1,
+        voteCount: 1,
+        maxSteps: 0,
+        stasisSteps: 1
       },
       containerRunner,
       scorer: new FakeScorer(workspaceRoot)
@@ -160,10 +167,12 @@ describe("orchestrator integration", () => {
 
     const state = await readRunState(workspaceRoot);
     expect(state.status).toBe("completed");
-    expect(state.completedReason).toBe("max-steps");
-    expect(state.history).toHaveLength(0);
+    expect(state.completedReason).toBe("stasis");
+    expect(state.history).toHaveLength(1);
     expect(state.incumbentPath).toBe("steps/0/baseline");
-    expect(containerRunner.executions).toEqual(["steps/0/baseline"]);
+    expect(containerRunner.executions[0]).toBe("steps/0/baseline");
+    expect(containerRunner.executions).toContain("steps/1/candidates/0");
+    expect(containerRunner.executions).toHaveLength(3);
     expect(await fs.pathExists(path.join(workspaceRoot, "steps", "0", "baseline", "index.html"))).toBe(
       true
     );
@@ -183,7 +192,7 @@ describe("orchestrator integration", () => {
       workspaceRoot,
       options: {
         scoringMode: "human",
-        maxSteps: 0
+        maxSteps: 1
       },
       containerRunner: {
         async runPrompt(execution) {
@@ -222,7 +231,7 @@ describe("orchestrator integration", () => {
     await runOrchestrator({
       workspaceRoot,
       options: {
-        maxSteps: 0
+        maxSteps: 1
       },
       containerRunner: {
         async runPrompt(execution) {

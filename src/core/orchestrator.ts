@@ -19,7 +19,7 @@ export interface RunOptions {
   candidateCount: number;
   voteCount: number;
   minSteps: number;
-  maxSteps: number;
+  maxSteps?: number;
   stasisSteps?: number;
   resume: boolean;
   modelOverride?: string;
@@ -31,6 +31,19 @@ function createRunId(now: Date): string {
     .toISOString()
     .replaceAll(":", "-")
     .replaceAll(".", "-");
+}
+
+function normalizeMaxSteps(maxSteps: number | undefined): number | undefined {
+  if (maxSteps == null || maxSteps === 0) {
+    return undefined;
+  }
+
+  return maxSteps;
+}
+
+function describeMaxSteps(maxSteps: number | undefined): string {
+  const normalizedMaxSteps = normalizeMaxSteps(maxSteps);
+  return normalizedMaxSteps == null ? "unlimited" : `up to ${normalizedMaxSteps}`;
 }
 
 function createInitialState(
@@ -49,7 +62,7 @@ function createInitialState(
     candidateCount: options.candidateCount,
     voteCount: options.voteCount,
     minSteps: options.minSteps,
-    maxSteps: options.maxSteps,
+    maxSteps: normalizeMaxSteps(options.maxSteps),
     stasisSteps: options.stasisSteps,
     consecutiveRejections: 0,
     archivePath,
@@ -170,6 +183,7 @@ export class Orchestrator {
       }
 
       const state = await this.stateStore.load();
+      state.maxSteps = normalizeMaxSteps(state.maxSteps);
       if (state.workspaceRoot !== this.workspace.root) {
         throw new Error(
           `Cannot resume: state workspace root ${state.workspaceRoot} does not match ${this.workspace.root}.`
@@ -207,7 +221,7 @@ export class Orchestrator {
     this.logger.info(`Archive target: ${archivePath}`);
     this.logger.info(`Generation harness: ${generation.harness}`);
     this.logger.info(
-      `Planned loop: baseline + up to ${this.options.maxSteps} mutation step(s), ${this.options.candidateCount} candidate(s) per step, ${this.options.voteCount} vote(s) per candidate.`
+      `Planned loop: baseline + ${describeMaxSteps(this.options.maxSteps)} mutation step(s), ${this.options.candidateCount} candidate(s) per step, ${this.options.voteCount} vote(s) per candidate.`
     );
 
     if (this.options.scoringMode === "human") {
@@ -576,7 +590,7 @@ export class Orchestrator {
       return undefined;
     }
 
-    if (completedIterations(state) >= state.maxSteps) {
+    if (state.maxSteps != null && completedIterations(state) >= state.maxSteps) {
       return "max-steps";
     }
 
@@ -603,8 +617,10 @@ export class Orchestrator {
     if (state.minSteps !== this.options.minSteps) {
       mismatches.push(`min-steps=${state.minSteps}`);
     }
-    if (state.maxSteps !== this.options.maxSteps) {
-      mismatches.push(`max-steps=${state.maxSteps}`);
+    const expectedMaxSteps = normalizeMaxSteps(state.maxSteps);
+    const requestedMaxSteps = normalizeMaxSteps(this.options.maxSteps);
+    if (expectedMaxSteps !== requestedMaxSteps) {
+      mismatches.push(`max-steps=${expectedMaxSteps ?? "disabled"}`);
     }
     if (state.stasisSteps !== this.options.stasisSteps) {
       mismatches.push(`stasis-steps=${state.stasisSteps}`);

@@ -193,7 +193,7 @@ Scaffold a new workspace with sample `INSTRUCTIONS.md`, `GENERATION.md`, `RUBRIC
 | `--candidates <n>` | `3` | Number of candidate artifacts per step |
 | `--votes <n>` | `3` (rubric), `1` (human) | Scoring votes per comparison |
 | `--min-steps <n>` | `0` | Minimum iterations before stasis applies |
-| `--max-steps <n>` | `20` | Maximum iterations. Pass without a value to disable the limit. |
+| `--max-steps [n]` | `20` | Maximum iterations. Pass without a value, or use `0`, to disable the limit. |
 | `--stasis-steps <n>` | — | Stop after this many consecutive rejections |
 | `--resume` | `false` | Resume from saved state |
 | `--model <id>` | — | Override the rubric model |

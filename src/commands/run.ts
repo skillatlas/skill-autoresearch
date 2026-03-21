@@ -39,7 +39,7 @@ export interface RunCliOptions {
   candidates: number;
   votes: number;
   minSteps: number;
-  maxSteps: number;
+  maxSteps?: number;
   stasisSteps?: number;
   resume: boolean;
   model?: string;
@@ -49,6 +49,7 @@ export interface RunCliOptions {
 }
 
 interface RunCliOptionSources {
+  maxSteps?: string;
   votes?: string;
 }
 
@@ -63,10 +64,21 @@ function parseScoringMode(value: string): ScoringMode {
 }
 
 export function normalizeRunCliOptions(
-  options: Omit<RunCliOptions, "scoringMode"> & { scoringMode?: string },
+  options: Omit<RunCliOptions, "scoringMode" | "maxSteps"> & {
+    maxSteps?: number | boolean;
+    scoringMode?: string;
+  },
   sources: RunCliOptionSources = {}
 ): RunCliOptions {
   const scoringMode = parseScoringMode(options.scoringMode ?? "rubric");
+  let maxSteps: number | undefined;
+  if (options.maxSteps === true || options.maxSteps === 0) {
+    maxSteps = undefined;
+  } else if (typeof options.maxSteps === "number") {
+    maxSteps = options.maxSteps;
+  } else {
+    maxSteps = sources.maxSteps === "default" ? 20 : undefined;
+  }
   let votes = options.votes;
 
   if (scoringMode === "human" && sources.votes === "default") {
@@ -79,6 +91,7 @@ export function normalizeRunCliOptions(
 
   return {
     ...options,
+    maxSteps,
     votes,
     scoringMode
   };
@@ -149,7 +162,12 @@ export function buildRunCommand(): Command {
     .option("--candidates <n>", "Number of candidates per step", parsePositiveInteger, 3)
     .option("--votes <n>", "Number of scoring votes per comparison", parsePositiveInteger, 3)
     .option("--min-steps <n>", "Minimum mutation iterations before stasis applies", parseNonNegativeInteger, 0)
-    .option("--max-steps <n>", "Maximum mutation iterations", parseNonNegativeInteger, 20)
+    .option(
+      "--max-steps [n]",
+      "Maximum mutation iterations (omit value or use 0 to disable)",
+      parseNonNegativeInteger,
+      20
+    )
     .option("--stasis-steps <n>", "Rejected mutation streak before stopping", parseNonNegativeInteger)
     .option("--resume", "Resume from existing state", false)
     .option("--model <id>", "Override rubric model")
@@ -169,6 +187,7 @@ export function buildRunCommand(): Command {
         runCommand(
           workspaceArg,
           normalizeRunCliOptions(rawOptions, {
+            maxSteps: command.getOptionValueSource("maxSteps"),
             votes: command.getOptionValueSource("votes")
           })
         )
