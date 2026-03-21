@@ -61,7 +61,7 @@ Defer extra subcommands until the core loop works. If needed later, add `status`
 Expected root contents:
 
 - `INSTRUCTIONS.md`
-- `GENERATION.md`
+- `GENERATION.md` with YAML frontmatter containing `harness: claude | codex`
 - `RUBRIC.md`
 - `skills/`
 - `steps/`
@@ -205,7 +205,7 @@ This is cleaner than writing directly into `steps/<n>` because it scales to mult
 
 ### Phase B. Generate baseline
 
-1. Run `container exec ./steps/0/baseline -- claude -p "<GENERATION.md contents>"`.
+1. Parse `GENERATION.md` frontmatter and run the selected harness with the markdown body as the prompt.
 2. Mark baseline as the current best artifact set.
 3. Copy `skills/` to `skills-original/`.
 4. Increment `stepIndex` to `1`.
@@ -221,7 +221,7 @@ This is cleaner than writing directly into `steps/<n>` because it scales to mult
 For each candidate `i` in `[0, candidates)`:
 
 1. Create `steps/<stepIndex>/candidates/<i>/`.
-2. Run `container exec ./steps/<stepIndex>/candidates/<i> -- claude -p "<GENERATION.md contents>"`.
+2. Parse `GENERATION.md` frontmatter and run the selected harness with the markdown body as the prompt.
 3. Mark candidate as generated.
 
 ### Phase E. Scoring

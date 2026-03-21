@@ -1,3 +1,7 @@
+---
+harness: claude
+---
+
 Build a portfolio-style landing page for a fictional creative studio called "Atelier Nox". The page must include:
 
 1. **Hero section** — studio name, a one-line tagline, and a "View Work" CTA

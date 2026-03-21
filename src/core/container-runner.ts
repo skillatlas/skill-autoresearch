@@ -5,12 +5,14 @@ import { createRequire } from "node:module";
 import { execa } from "execa";
 
 import { Logger } from "./logger.js";
+import { GenerationHarness } from "../types/generation.js";
 
 export interface ContainerExecution {
   containerRoot: string;
   targetPath: string;
   prompt: string;
   label: string;
+  harness: GenerationHarness;
 }
 
 export interface ContainerRunner {
@@ -18,7 +20,15 @@ export interface ContainerRunner {
 }
 
 const require = createRequire(import.meta.url);
-const FORWARDED_ENV_VARS = ["CLAUDE_CODE_OAUTH_TOKEN"] as const;
+const FORWARDED_ENV_VARS: Record<GenerationHarness, readonly string[]> = {
+  claude: ["CLAUDE_CODE_OAUTH_TOKEN"],
+  codex: [
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "OPENAI_ORG_ID",
+    "OPENAI_PROJECT_ID"
+  ]
+};
 
 let cachedContainerCliEntryPoint: string | undefined;
 
@@ -88,18 +98,23 @@ export function buildContainerExecArgs(
   );
   const args = [containerCliEntryPoint, "exec"];
 
-  for (const envVarName of FORWARDED_ENV_VARS) {
+  for (const envVarName of FORWARDED_ENV_VARS[execution.harness]) {
     if (env[envVarName]) {
       args.push("--env", envVarName);
     }
   }
+
+  const agentCommand =
+    execution.harness === "claude"
+      ? 'cd "$1" && claude -p "$2"'
+      : 'cd "$1" && codex exec --skip-git-repo-check -a never --sandbox workspace-write "$2"';
 
   args.push(
     execution.containerRoot,
     "--",
     "bash",
     "-lc",
-    'cd "$1" && claude -p "$2"',
+    agentCommand,
     "bash",
     containerTargetPath,
     execution.prompt

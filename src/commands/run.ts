@@ -14,6 +14,7 @@ import {
 } from "../core/scorer.js";
 import { StateStore } from "../core/state-store.js";
 import { WorkspaceManager } from "../core/workspace.js";
+import { ScoringProvider } from "../types/rubric.js";
 import { ScoringMode } from "../types/state.js";
 
 function parseNonNegativeInteger(value: string): number {
@@ -99,10 +100,13 @@ export async function runCommand(
   const workspaceRoot = resolveWorkspaceRoot(workspaceArg);
   const logger = new Logger(options.verbose);
   const workspace = new WorkspaceManager(workspaceRoot, logger);
+  let scoringProvider: ScoringProvider | undefined;
+
   if (options.scoringMode === "rubric") {
     const rubric = await loadRubric(workspace.paths.rubricPath);
-    loadWorkspaceEnv(workspace.paths.envPath, { scoringProvider: rubric.provider });
+    scoringProvider = rubric.provider;
   }
+  loadWorkspaceEnv(workspace.paths.envPath, { scoringProvider });
 
   const runOptions: RunOptions = {
     workspaceRoot,

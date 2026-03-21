@@ -198,10 +198,12 @@ export class Orchestrator {
     const archivePath = await this.workspace.archiveExistingSteps(previewRunId, {
       dryRun: true
     });
+    const generation = await this.workspace.loadGenerationSpec();
 
     this.logger.info(`Dry run for workspace ${this.workspace.root}`);
     this.logger.info(`Run ID: ${previewRunId}`);
     this.logger.info(`Archive target: ${archivePath}`);
+    this.logger.info(`Generation harness: ${generation.harness}`);
     this.logger.info(
       `Planned loop: baseline + up to ${this.options.maxSteps} mutation step(s), ${this.options.candidateCount} candidate(s) per step, ${this.options.voteCount} vote(s) per candidate.`
     );
@@ -225,13 +227,15 @@ export class Orchestrator {
     const baselineDir = path.join(this.workspace.paths.stepsDir, "0", "baseline");
     await this.workspace.resetDirectory(baselineDir);
     const sandbox = await this.workspace.createGenerationSandbox(baselineDir);
+    const generation = await this.workspace.loadGenerationSpec();
 
     try {
       await this.containerRunner.runPrompt({
         containerRoot: sandbox.containerRoot,
         targetPath: sandbox.targetPath,
-        prompt: await this.workspace.readPrompt(this.workspace.paths.generationPath),
-        label: "Baseline generation"
+        prompt: generation.prompt,
+        label: "Baseline generation",
+        harness: generation.harness
       });
     } finally {
       await sandbox.cleanup();
@@ -273,7 +277,8 @@ export class Orchestrator {
         containerRoot: sandbox.containerRoot,
         targetPath: sandbox.targetPath,
         prompt: await this.workspace.readPrompt(this.workspace.paths.instructionsPath),
-        label: `Skill mutation for step ${state.stepIndex}`
+        label: `Skill mutation for step ${state.stepIndex}`,
+        harness: "claude"
       });
       await sandbox.applyChanges();
     } finally {
@@ -303,7 +308,7 @@ export class Orchestrator {
   }
 
   private async generateCandidates(state: RunState): Promise<RunState> {
-    const prompt = await this.workspace.readPrompt(this.workspace.paths.generationPath);
+    const generation = await this.workspace.loadGenerationSpec();
     const pendingCandidates = state.activeCandidates.filter(
       (candidate) => candidate.status === "pending"
     );
@@ -321,8 +326,9 @@ export class Orchestrator {
         await this.containerRunner.runPrompt({
           containerRoot: sandbox.containerRoot,
           targetPath: sandbox.targetPath,
-          prompt,
-          label: generationLabel
+          prompt: generation.prompt,
+          label: generationLabel,
+          harness: generation.harness
         });
       } finally {
         await sandbox.cleanup();
