@@ -74,6 +74,64 @@ describe("container runner", () => {
     ]);
   });
 
+  it("enables streamed Claude output for generation when DEBUG_GENERATION=1", () => {
+    const args = buildContainerExecArgs(
+      "/tmp/container.js",
+      {
+        containerRoot: "/tmp/project",
+        targetPath: "/tmp/project/artifact",
+        prompt: "Generate",
+        label: "Baseline generation",
+        harness: "claude"
+      },
+      {
+        DEBUG_GENERATION: "1"
+      }
+    );
+
+    expect(args).toEqual([
+      "/tmp/container.js",
+      "exec",
+      "/tmp/project",
+      "--",
+      "bash",
+      "-lc",
+      'cd "$1" && claude --verbose --output-format stream-json -p "$2"',
+      "bash",
+      "artifact",
+      "Generate"
+    ]);
+  });
+
+  it("does not enable streamed Claude output for mutation runs", () => {
+    const args = buildContainerExecArgs(
+      "/tmp/container.js",
+      {
+        containerRoot: "/tmp/project",
+        targetPath: "/tmp/project/skills",
+        prompt: "Mutate",
+        label: "Skill mutation for step 1",
+        harness: "claude"
+      },
+      {
+        DEBUG_GENERATION: "1"
+      }
+    );
+
+    expect(args).toEqual([
+      "/tmp/container.js",
+      "exec",
+      "/tmp/project",
+      "--",
+      "bash",
+      "-lc",
+      'cd "$1" && claude -p "$2"',
+      "bash",
+      "skills",
+      "Mutate"
+    ]);
+  });
+
   it("uses the sandbox root when the target path is the container root", () => {
     const args = buildContainerExecArgs(
       "/tmp/container.js",

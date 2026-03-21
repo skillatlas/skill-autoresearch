@@ -22,6 +22,12 @@ function relativeTargetPath(workspaceRoot: string, targetPath: string): string {
   return path.relative(workspaceRoot, targetPath).split(path.sep).join("/");
 }
 
+function isCandidateExecution(
+  execution: Parameters<FakeContainerRunner["runPrompt"]>[0]
+): boolean {
+  return /^Candidate \d+ generation for step \d+$/.test(execution.label);
+}
+
 class ConcurrentCandidateRunner {
   public maxActiveCandidateRuns = 0;
   private activeCandidateRuns = 0;
@@ -41,9 +47,7 @@ class ConcurrentCandidateRunner {
   public async runPrompt(
     execution: Parameters<FakeContainerRunner["runPrompt"]>[0]
   ): Promise<void> {
-    const isCandidateRun = /^steps\/\d+\/candidates\/\d+$/.test(
-      relativeTargetPath(this.workspaceRoot, execution.targetPath)
-    );
+    const isCandidateRun = isCandidateExecution(execution);
 
     if (!isCandidateRun) {
       await this.delegate.runPrompt(execution);
@@ -125,7 +129,7 @@ describe("orchestrator integration", () => {
             }
 
             await fs.ensureDir(execution.targetPath);
-            if (execution.targetPath === path.join(workspaceRoot, "steps", "0", "baseline")) {
+            if (execution.label === "Baseline generation") {
               await fs.writeFile(
                 path.join(execution.targetPath, "index.html"),
                 "score=0\n",
@@ -333,7 +337,7 @@ describe("orchestrator integration", () => {
         "1:1": 3
       },
       failOnce: (execution) =>
-        execution.targetPath.endsWith(path.join("steps", "1", "candidates", "1"))
+        execution.label === "Candidate 1 generation for step 1"
     });
 
     await expect(

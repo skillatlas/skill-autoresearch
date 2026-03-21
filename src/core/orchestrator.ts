@@ -237,6 +237,7 @@ export class Orchestrator {
         label: "Baseline generation",
         harness: generation.harness
       });
+      await sandbox.persistArtifacts();
     } finally {
       await sandbox.cleanup();
     }
@@ -330,6 +331,7 @@ export class Orchestrator {
           label: generationLabel,
           harness: generation.harness
         });
+        await sandbox.persistArtifacts();
       } finally {
         await sandbox.cleanup();
       }
