@@ -1046,6 +1046,10 @@ export class LocalHumanReviewService implements HumanReviewService {
         justify-content: flex-end;
       }
 
+      .controls-tools[hidden] {
+        display: none;
+      }
+
       .viewport-picker {
         display: inline-flex;
         flex-wrap: wrap;
@@ -1161,7 +1165,7 @@ export class LocalHumanReviewService implements HumanReviewService {
           <strong id="prompt-title">Loading\u2026</strong>
           <span id="prompt-meta"></span>
         </div>
-        <div class="controls-tools">
+        <div class="controls-tools" id="preview-controls" hidden>
           <div class="viewport-picker" role="group" aria-label="Preview viewport">
             <span class="viewport-label">Viewport</span>
             <button class="viewport-button" type="button" data-viewport="${PREVIEW_VIEWPORTS[0]}" aria-pressed="false">${PREVIEW_VIEWPORTS[0]}px</button>
@@ -1211,7 +1215,7 @@ export class LocalHumanReviewService implements HumanReviewService {
         </article>
       </section>
 
-      <div class="status" id="status"></div>
+      <div class="status" id="status" hidden></div>
     </main>
 
     <script>
@@ -1220,6 +1224,7 @@ export class LocalHumanReviewService implements HumanReviewService {
       const progressFill = document.getElementById("progress-fill");
       const promptTitle = document.getElementById("prompt-title");
       const promptMeta = document.getElementById("prompt-meta");
+      const previewControls = document.getElementById("preview-controls");
       const reviewWorkspace = document.getElementById("review-workspace");
       const incumbentPath = document.getElementById("incumbent-path");
       const candidatePath = document.getElementById("candidate-path");
@@ -1350,9 +1355,11 @@ export class LocalHumanReviewService implements HumanReviewService {
       }
 
       function setPreviewVisibility(visible) {
+        previewControls.hidden = !visible;
         reviewWorkspace.hidden = !visible;
         incumbentPreview.hidden = !visible;
         candidatePreview.hidden = !visible;
+        status.hidden = !visible;
 
         if (visible) {
           layoutPreviewFrames();
@@ -1382,12 +1389,6 @@ export class LocalHumanReviewService implements HumanReviewService {
           setPreviewVisibility(false);
           clearFrames();
           setVotingEnabled(false);
-          status.textContent =
-            session.mode === "completed"
-              ? "All done."
-              : session.mode === "failed"
-                ? "Something went wrong \u2014 check the terminal."
-                : "Waiting for the next comparison\u2026";
           return;
         }
 
@@ -1402,6 +1403,7 @@ export class LocalHumanReviewService implements HumanReviewService {
         openIncumbent.href = session.current.incumbentUrl;
         openCandidate.href = session.current.candidateUrl;
         setVotingEnabled(true);
+        status.hidden = false;
         status.textContent = "Which version looks better?";
       }
 
