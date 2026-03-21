@@ -18,7 +18,7 @@ export interface RunOptions {
   voteCount: number;
   minSteps: number;
   maxSteps: number;
-  stasisSteps: number;
+  stasisSteps?: number;
   resume: boolean;
   scoringProviderOverride?: ScoringProvider;
   modelOverride?: string;
@@ -458,6 +458,7 @@ export class Orchestrator {
     }
 
     if (
+      state.stasisSteps != null &&
       state.stasisSteps > 0 &&
       completedIterations(state) >= state.minSteps &&
       state.consecutiveRejections >= state.stasisSteps

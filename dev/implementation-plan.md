@@ -33,11 +33,11 @@ skill-autoresearch run [workspace]
 
 Initial flags:
 
-- `--candidates <n>`: number of generation candidates per step, default `1`
-- `--votes <n>`: number of scoring passes per comparison, default `1`
+- `--candidates <n>`: number of generation candidates per step, default `3`
+- `--votes <n>`: number of scoring passes per comparison, default `3`
 - `--min-steps <n>`: minimum number of mutation iterations before termination is allowed, default `0`
 - `--max-steps <n>`: hard cap on mutation iterations
-- `--stasis-steps <n>`: terminate after this many consecutive rejected mutation iterations
+- `--stasis-steps <n>`: terminate after this many consecutive rejected mutation iterations (disabled by default)
 - `--resume`: resume existing run state instead of starting fresh
 - `--model <id>`: optional override for rubric frontmatter model
 - `--dry-run`: validate inputs and print planned actions without running agents
@@ -126,11 +126,10 @@ Recommended shape:
   "workspaceRoot": "/abs/path",
   "status": "idle|running|awaiting-score|failed|completed",
   "stepIndex": 0,
-  "candidateCount": 1,
-  "voteCount": 1,
+  "candidateCount": 3,
+  "voteCount": 3,
   "minSteps": 0,
   "maxSteps": 20,
-  "stasisSteps": 5,
   "consecutiveRejections": 0,
   "archivePath": "archive/2026-03-20T19-57-00Z",
   "skillsOriginalPath": "skills-original",

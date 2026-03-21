@@ -252,6 +252,10 @@ describe("orchestrator integration", () => {
 
     await runOrchestrator({
       workspaceRoot,
+      options: {
+        candidateCount: 1,
+        voteCount: 1
+      },
       containerRunner: new FakeContainerRunner(workspaceRoot, {
         mutationVersions: [3],
         candidateScores: {
@@ -327,6 +331,7 @@ describe("orchestrator integration", () => {
       runOrchestrator({
         workspaceRoot,
         options: {
+          candidateCount: 1,
           voteCount: 3,
           maxSteps: 1
         },
@@ -347,6 +352,7 @@ describe("orchestrator integration", () => {
     await runOrchestrator({
       workspaceRoot,
       options: {
+        candidateCount: 1,
         voteCount: 3,
         maxSteps: 1,
         resume: true
@@ -372,6 +378,8 @@ describe("orchestrator integration", () => {
     await runOrchestrator({
       workspaceRoot,
       options: {
+        candidateCount: 1,
+        voteCount: 1,
         maxSteps: 1,
         scoringProviderOverride: "codex"
       },
@@ -394,6 +402,8 @@ describe("orchestrator integration", () => {
     await runOrchestrator({
       workspaceRoot,
       options: {
+        candidateCount: 1,
+        voteCount: 1,
         maxSteps: 5,
         minSteps: 2,
         stasisSteps: 1

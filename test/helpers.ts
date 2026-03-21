@@ -234,11 +234,10 @@ export async function runOrchestrator(input: {
     logger,
     {
       workspaceRoot: input.workspaceRoot,
-      candidateCount: 1,
-      voteCount: 1,
+      candidateCount: 3,
+      voteCount: 3,
       minSteps: 0,
       maxSteps: 1,
-      stasisSteps: 5,
       resume: false,
       dryRun: false,
       ...input.options

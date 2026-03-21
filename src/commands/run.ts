@@ -49,7 +49,7 @@ export interface RunCliOptions {
   votes: number;
   minSteps: number;
   maxSteps: number;
-  stasisSteps: number;
+  stasisSteps?: number;
   resume: boolean;
   scoringProvider?: ScoringProvider;
   model?: string;
@@ -115,11 +115,11 @@ export function buildRunCommand(): Command {
   return new Command("run")
     .description("Run the skill autoresearch loop.")
     .argument("[workspace]", "Workspace root", ".")
-    .option("--candidates <n>", "Number of candidates per step", parsePositiveInteger, 1)
-    .option("--votes <n>", "Number of scoring votes per comparison", parsePositiveInteger, 1)
+    .option("--candidates <n>", "Number of candidates per step", parsePositiveInteger, 3)
+    .option("--votes <n>", "Number of scoring votes per comparison", parsePositiveInteger, 3)
     .option("--min-steps <n>", "Minimum mutation iterations before stasis applies", parseNonNegativeInteger, 0)
     .option("--max-steps <n>", "Maximum mutation iterations", parseNonNegativeInteger, 20)
-    .option("--stasis-steps <n>", "Rejected mutation streak before stopping", parseNonNegativeInteger, 5)
+    .option("--stasis-steps <n>", "Rejected mutation streak before stopping", parseNonNegativeInteger)
     .option("--resume", "Resume from existing state", false)
     .option(
       "--scoring-provider <provider>",
