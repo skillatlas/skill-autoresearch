@@ -70,7 +70,7 @@ export const runStateSchema = z.object({
   candidateCount: z.number().int().positive(),
   voteCount: z.number().int().positive(),
   minSteps: z.number().int().nonnegative(),
-  maxSteps: z.number().int().nonnegative(),
+  maxSteps: z.number().int().nonnegative().optional(),
   stasisSteps: z.number().int().nonnegative().optional(),
   consecutiveRejections: z.number().int().nonnegative(),
   archivePath: z.string(),
