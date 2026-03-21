@@ -5,6 +5,7 @@ import dotenv from "dotenv";
 import { execa, execaCommand } from "execa";
 import path from "node:path";
 
+import { formatCommandFailure } from "./error-format.js";
 import { Logger } from "./logger.js";
 import { interpolateStepPath, loadRubric } from "./rubric.js";
 import {
@@ -539,7 +540,13 @@ export class Scorer {
 
         if (result.exitCode !== 0) {
           throw new Error(
-            `Rubric command failed for ${stepPath} with exit code ${result.exitCode}.`
+            formatCommandFailure({
+              label: "Rubric command",
+              subject: stepPath,
+              command,
+              exitCode: result.exitCode ?? 1,
+              output: result.all
+            })
           );
         }
       }

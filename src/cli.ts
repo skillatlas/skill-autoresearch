@@ -2,6 +2,7 @@
 import { Command } from "commander";
 
 import { buildRunCommand } from "./commands/run.js";
+import { formatErrorForCli } from "./core/error-format.js";
 
 const program = new Command();
 
@@ -11,7 +12,6 @@ program
   .addCommand(buildRunCommand());
 
 program.parseAsync(process.argv).catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error);
-  console.error(message);
+  console.error(formatErrorForCli(error));
   process.exitCode = 1;
 });
