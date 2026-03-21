@@ -483,22 +483,22 @@ export class LocalHumanReviewService implements HumanReviewService {
   private describePhase(): string {
     const state = this.latestState;
     if (!state) {
-      return "Starting run";
+      return "Starting\u2026";
     }
 
     switch (state.currentPhase) {
       case "generate-baseline":
-        return "Generating baseline";
+        return "Baseline";
       case "snapshot":
-        return "Snapshotting skills";
+        return "Snapshot";
       case "mutate-skills":
-        return `Mutating skills for step ${state.stepIndex}`;
+        return `Step ${state.stepIndex} \u00B7 Mutating`;
       case "generate-candidates":
-        return `Generating candidates for step ${state.stepIndex}`;
+        return `Step ${state.stepIndex} \u00B7 Generating`;
       case "score":
-        return `Scoring candidates for step ${state.stepIndex}`;
+        return `Step ${state.stepIndex} \u00B7 Scoring`;
       case "promote":
-        return `Promoting decision for step ${state.stepIndex}`;
+        return `Step ${state.stepIndex} \u00B7 Promoting`;
       default:
         return "Running";
     }
@@ -507,41 +507,41 @@ export class LocalHumanReviewService implements HumanReviewService {
   private describeSummary(mode: ReturnType<typeof this.getMode>): string {
     const state = this.latestState;
     if (!state) {
-      return "Preparing human scoring server.";
+      return "Setting up\u2026";
     }
 
     if (mode === "review" && this.activeReview) {
       const current = this.activeReview.queue[this.activeReview.activeIndex];
       if (!current) {
-        return "All human comparisons recorded. Finalizing this step.";
+        return "All votes recorded. Wrapping up this step.";
       }
 
-      return `Review candidate ${current.candidateIndex}, vote ${current.attempt + 1} of ${this.activeReview.input.voteCount}.`;
+      return `Candidate ${current.candidateIndex} \u00B7 vote ${current.attempt + 1} of ${this.activeReview.input.voteCount}`;
     }
 
     if (mode === "completed") {
-      return `Run completed (${state.completedReason ?? "done"}).`;
+      return `Run complete (${state.completedReason ?? "done"}).`;
     }
 
     if (mode === "failed") {
-      return "Run failed. Check the console log for the error.";
+      return "Run failed \u2014 check the terminal for details.";
     }
 
     switch (state.currentPhase) {
       case "generate-baseline":
-        return "Creating the baseline artifact from the current skills.";
+        return "Building the baseline artifact\u2026";
       case "snapshot":
-        return "Saving the current skills before the next mutation.";
+        return "Saving a snapshot of the current skills\u2026";
       case "mutate-skills":
-        return "Applying the mutation prompt to the live skills directory.";
+        return "Applying the mutation\u2026";
       case "generate-candidates":
-        return `Generated ${state.activeCandidates.filter((candidate) => candidate.status !== "pending").length}/${state.candidateCount} candidates for this step.`;
+        return `${state.activeCandidates.filter((candidate) => candidate.status !== "pending").length} of ${state.candidateCount} candidates generated`;
       case "score":
-        return `Collected ${state.activeCandidates.reduce((sum, candidate) => sum + candidate.votes.length, 0)}/${state.activeCandidates.length * state.voteCount} human vote(s) so far.`;
+        return `${state.activeCandidates.reduce((sum, candidate) => sum + candidate.votes.length, 0)} of ${state.activeCandidates.length * state.voteCount} votes collected`;
       case "promote":
-        return "Applying the accept or reject decision for this mutation step.";
+        return "Deciding whether to keep or revert this mutation\u2026";
       default:
-        return "Running.";
+        return "Working\u2026";
     }
   }
 
@@ -642,7 +642,7 @@ export class LocalHumanReviewService implements HumanReviewService {
     }
 
     this.logger.info(
-      `Awaiting human review ${this.activeReview.activeIndex + 1}/${this.activeReview.queue.length}: candidate ${current.candidateIndex}, vote ${current.attempt + 1}/${this.activeReview.input.voteCount}.`
+      `Awaiting vote ${this.activeReview.activeIndex + 1}/${this.activeReview.queue.length}: candidate ${current.candidateIndex}, vote ${current.attempt + 1}/${this.activeReview.input.voteCount}`
     );
   }
 
@@ -1220,7 +1220,7 @@ export class LocalHumanReviewService implements HumanReviewService {
         <div class="masthead">
           <p class="eyebrow">Human scoring</p>
           <h1>Pick the stronger artifact.</h1>
-          <p class="subhead">This page connects as soon as the CLI starts, tracks run progress live over SSE, and switches into side-by-side review as soon as a comparison is ready.</p>
+          <p class="subhead">Compare two versions of an artifact side by side and vote for the one that looks better. Progress updates automatically.</p>
         </div>
         <aside class="queue">
           <p class="eyebrow">Progress</p>
@@ -1234,7 +1234,7 @@ export class LocalHumanReviewService implements HumanReviewService {
 
       <section class="controls">
         <div class="controls-copy">
-          <strong id="prompt-title">Connecting…</strong>
+          <strong id="prompt-title">Loading\u2026</strong>
           <span id="prompt-meta"></span>
         </div>
         <div class="controls-tools">
@@ -1573,8 +1573,8 @@ export class LocalHumanReviewService implements HumanReviewService {
           const item = document.createElement("li");
           item.className = "queue-item";
           item.innerHTML =
-            "<span>Candidate " + candidate.index + " · " + candidate.status + "</span>" +
-            "<span>" + candidate.completedVotes + "/" + candidate.totalVotes + " vote(s)</span>";
+            "<span>Candidate " + candidate.index + " \u00B7 " + candidate.status + "</span>" +
+            "<span>" + candidate.completedVotes + " / " + candidate.totalVotes + " votes</span>";
           queueList.appendChild(item);
         }
 
@@ -1586,10 +1586,10 @@ export class LocalHumanReviewService implements HumanReviewService {
           setVotingEnabled(false);
           status.textContent =
             session.mode === "completed"
-              ? "Run completed."
+              ? "All done."
               : session.mode === "failed"
-                ? "Run failed."
-                : "Waiting for the next reviewable comparison.";
+                ? "Something went wrong \u2014 check the terminal."
+                : "Waiting for the next comparison\u2026";
           return;
         }
 
@@ -1604,13 +1604,13 @@ export class LocalHumanReviewService implements HumanReviewService {
         openCandidate.href = session.current.candidateUrl;
         layoutPreviewFrames();
         setVotingEnabled(true);
-        status.textContent = "Choose the stronger artifact for this comparison.";
+        status.textContent = "Which version looks better?";
       }
 
       async function loadInitialSession() {
         const response = await fetch("/api/session", { cache: "no-store" });
         if (!response.ok) {
-          throw new Error("Failed to load review session.");
+          throw new Error("Couldn\u2019t load the review session.");
         }
 
         render(await response.json());
@@ -1622,7 +1622,7 @@ export class LocalHumanReviewService implements HumanReviewService {
         }
 
         setVotingEnabled(false);
-        status.textContent = "Recording vote…";
+        status.textContent = "Saving\u2026";
 
         const response = await fetch("/api/vote", {
           method: "POST",
@@ -1638,7 +1638,7 @@ export class LocalHumanReviewService implements HumanReviewService {
 
         if (!response.ok) {
           const errorText = await response.text();
-          status.textContent = errorText || "Unable to record vote.";
+          status.textContent = errorText || "Couldn\u2019t save that vote. Try again.";
           return;
         }
 
@@ -1691,7 +1691,7 @@ export class LocalHumanReviewService implements HumanReviewService {
         render(JSON.parse(event.data));
       });
       stream.onerror = () => {
-        status.textContent = "Lost the live connection to the local server.";
+        status.textContent = "Connection lost. Reload the page to reconnect.";
       };
     </script>
   </body>
