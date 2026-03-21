@@ -6,13 +6,13 @@ commands:
   - outputType: text
     resultPath: "$STEP_PATH/index.html"
   - outputType: image
-    command: playwright-cli -s="$RUBRIC_RUN_ID" open "$STEP_ORIGIN/index.html" && playwright-cli -s="$RUBRIC_RUN_ID" resize 1440 1080 && playwright-cli -s="$RUBRIC_RUN_ID" screenshot --filename "$STEP_PATH/index.png" && playwright-cli -s="$RUBRIC_RUN_ID" close
+    command: playwright-cli -s="$RUBRIC_RUN_ID-$$" open "$STEP_ORIGIN/index.html" && playwright-cli -s="$RUBRIC_RUN_ID-$$" resize 1440 1080 && playwright-cli -s="$RUBRIC_RUN_ID-$$" screenshot --filename "$STEP_PATH/index.png" && playwright-cli -s="$RUBRIC_RUN_ID-$$" close
     resultPath: "$STEP_PATH/index.png"
 ---
 
 You are a senior design critic and frontend engineer evaluating two candidate HTML pages. Each candidate is a self-contained `index.html` for a creative studio landing page. Score them on the dimensions below, then declare a winner.
 
-In rubric frontmatter, `resultPath` is the evidence file the scorer reads. `command` is optional preprocessing that creates or updates that file before scoring. Set `http_server: true` to serve the step directory on an ephemeral localhost port and expose that URL as `$STEP_ORIGIN` for rubric commands. Commands also receive a unique `$RUBRIC_RUN_ID`, which is useful for tool-specific session IDs such as `playwright-cli -s=...`.
+In rubric frontmatter, `resultPath` is the evidence file the scorer reads. `command` is optional preprocessing that creates or updates that file before scoring. Set `http_server: true` to serve the step directory on an ephemeral localhost port and expose that URL as `$STEP_ORIGIN` for rubric commands. Commands also receive a unique `$RUBRIC_RUN_ID`; when a CLI needs a process-local session name, combine it with `$$` as shown above.
 
 ## Evaluation dimensions
 
