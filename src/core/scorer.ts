@@ -190,13 +190,17 @@ export class OpenRouterVoteJudge implements VoteJudge {
     > = [
       {
         type: "text",
-        text: `${label} evidence. Judge this candidate only from the attached images and any labels provided.`
+        text: `${label} evidence. Judge this candidate only from the text excerpts, attached images, and labels provided.`
       }
     ];
 
     for (const [index, item] of evidence.entries()) {
-      if (item.outputType !== "image") {
-        throw new Error("Mixed evidence types are not supported in a single message.");
+      if (item.outputType === "text") {
+        content.push({
+          type: "text",
+          text: `Evidence ${index + 1} (${item.label}):\n${item.content}`
+        });
+        continue;
       }
 
       content.push({
@@ -326,47 +330,60 @@ export class CodexVoteJudge implements VoteJudge {
       ""
     ];
 
-    if (input.incumbentEvidence[0]?.outputType === "text") {
+    let nextImageIndex = 1;
+    const candidateAEvidence = this.formatEvidenceBlock(
+      "Candidate A",
+      input.incumbentEvidence,
+      nextImageIndex
+    );
+    nextImageIndex = candidateAEvidence.nextImageIndex;
+
+    const candidateBEvidence = this.formatEvidenceBlock(
+      "Candidate B",
+      input.candidateEvidence,
+      nextImageIndex
+    );
+
+    sections.push(...candidateAEvidence.lines, ...candidateBEvidence.lines);
+
+    const hasImages = candidateBEvidence.nextImageIndex > 1;
+    if (hasImages) {
       sections.push(
-        "Candidate A evidence:",
-        this.formatTextEvidence(input.incumbentEvidence),
-        "",
-        "Candidate B evidence:",
-        this.formatTextEvidence(input.candidateEvidence)
+        "Image attachments are provided in the numbered order above.",
+        ""
       );
-      return sections.join("\n");
     }
 
     sections.push(
-      "Attached images appear in this exact order:",
-      ...this.formatImageEvidence("Candidate A", input.incumbentEvidence),
-      ...this.formatImageEvidence("Candidate B", input.candidateEvidence),
-      "",
-      "Judge only from the attachment contents and the labels above."
+      hasImages
+        ? "Judge only from the evidence above and the attached image contents."
+        : "Judge only from the evidence above."
     );
     return sections.join("\n");
   }
 
-  private formatTextEvidence(evidence: EvidenceItem[]): string {
-    return evidence
-      .map((item, index) => {
-        if (item.outputType !== "text") {
-          throw new Error("Mixed evidence types are not supported for Codex scoring.");
-        }
+  private formatEvidenceBlock(
+    label: string,
+    evidence: EvidenceItem[],
+    startingImageIndex: number
+  ): { lines: string[]; nextImageIndex: number } {
+    const lines = [`${label} evidence:`];
+    let nextImageIndex = startingImageIndex;
 
-        return `Evidence ${index + 1} (${item.label}):\n${item.content}`;
-      })
-      .join("\n\n");
-  }
-
-  private formatImageEvidence(label: string, evidence: EvidenceItem[]): string[] {
-    return evidence.map((item, index) => {
-      if (item.outputType !== "image") {
-        throw new Error("Mixed evidence types are not supported for Codex scoring.");
+    for (const [index, item] of evidence.entries()) {
+      if (item.outputType === "text") {
+        lines.push(`Evidence ${index + 1} (${item.label}) [text]:`, item.content, "");
+        continue;
       }
 
-      return `- ${label} image ${index + 1} (${item.label}): ${path.basename(item.path)}`;
-    });
+      lines.push(
+        `Evidence ${index + 1} (${item.label}) [image attachment ${nextImageIndex}]: ${path.basename(item.path)}`,
+        ""
+      );
+      nextImageIndex += 1;
+    }
+
+    return { lines, nextImageIndex };
   }
 }
 
@@ -417,7 +434,7 @@ export class Scorer {
       }
 
       const label = `command-${index + 1}`;
-      if (rubric.outputType === "text") {
+      if (commandDefinition.outputType === "text") {
         const textEvidence = await this.readTextEvidence(
           commandDefinition.resultPath,
           resolvedStepPath,
@@ -431,28 +448,9 @@ export class Scorer {
         continue;
       }
 
-      if (!commandDefinition.resultPath) {
-        throw new Error("Image rubric commands must define `resultPath`.");
-      }
-
-      const imagePath = path.resolve(
-        this.workspaceRoot,
-        interpolateStepPath(commandDefinition.resultPath, resolvedStepPath)
+      evidence.push(
+        await this.readImageEvidence(commandDefinition.resultPath, resolvedStepPath, label)
       );
-      const bytes = await fs.readFile(imagePath);
-      if (bytes.length === 0) {
-        throw new Error(`Image evidence is empty: ${imagePath}`);
-      }
-      const mimeType = inferImageMimeType(imagePath);
-      assertImageBytesMatchMimeType(imagePath, mimeType, bytes);
-
-      evidence.push({
-        outputType: "image",
-        label,
-        path: imagePath,
-        mimeType,
-        bytes
-      });
     }
 
     if (evidence.length === 0) {
@@ -538,5 +536,34 @@ export class Scorer {
     }
 
     return trimmedStdout;
+  }
+
+  private async readImageEvidence(
+    resultPath: string | undefined,
+    resolvedStepPath: string,
+    label: string
+  ): Promise<EvidenceItem> {
+    if (!resultPath) {
+      throw new Error("Image rubric commands must define `resultPath`.");
+    }
+
+    const imagePath = path.resolve(
+      this.workspaceRoot,
+      interpolateStepPath(resultPath, resolvedStepPath)
+    );
+    const bytes = await fs.readFile(imagePath);
+    if (bytes.length === 0) {
+      throw new Error(`Image evidence is empty: ${imagePath}`);
+    }
+    const mimeType = inferImageMimeType(imagePath);
+    assertImageBytesMatchMimeType(imagePath, mimeType, bytes);
+
+    return {
+      outputType: "image",
+      label,
+      path: imagePath,
+      mimeType,
+      bytes
+    };
   }
 }

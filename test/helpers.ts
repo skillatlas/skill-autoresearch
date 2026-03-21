@@ -161,8 +161,7 @@ export class FakeScorer implements ScoringService {
       sourcePath: rubricPath,
       provider: this.options.rubricProvider ?? "openrouter",
       modelId: "test-model",
-      outputType: "text",
-      commands: [{ command: 'cat "$STEP_PATH/index.html"' }],
+      commands: [{ outputType: "text", command: 'cat "$STEP_PATH/index.html"' }],
       prompt: "Prefer the higher score."
     };
   }

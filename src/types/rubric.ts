@@ -3,7 +3,8 @@ import { z } from "zod";
 export const scoringProviderSchema = z.enum(["openrouter", "codex"]);
 export const evidenceOutputTypeSchema = z.enum(["text", "image"]);
 
-export const rubricCommandSchema = z.object({
+export const normalizedRubricCommandSchema = z.object({
+  outputType: evidenceOutputTypeSchema,
   command: z.string().min(1, "Rubric command must be a non-empty string."),
   resultPath: z.string().min(1).optional()
 });
@@ -12,8 +13,7 @@ export const normalizedRubricSchema = z.object({
   sourcePath: z.string(),
   provider: scoringProviderSchema,
   modelId: z.string().min(1),
-  outputType: evidenceOutputTypeSchema,
-  commands: z.array(rubricCommandSchema).min(1),
+  commands: z.array(normalizedRubricCommandSchema).min(1),
   prompt: z.string().min(1)
 });
 
@@ -36,7 +36,7 @@ export const scoreVoteJsonSchema = {
 
 export type ScoringProvider = z.infer<typeof scoringProviderSchema>;
 export type EvidenceOutputType = z.infer<typeof evidenceOutputTypeSchema>;
-export type RubricCommand = z.infer<typeof rubricCommandSchema>;
+export type NormalizedRubricCommand = z.infer<typeof normalizedRubricCommandSchema>;
 export type NormalizedRubric = z.infer<typeof normalizedRubricSchema>;
 export type ScoreVote = z.infer<typeof scoreVoteSchema>;
 

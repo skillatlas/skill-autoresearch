@@ -184,7 +184,9 @@ export class Orchestrator {
     this.logger.info(
       `Rubric scorer: ${
         rubric.provider
-      }/${this.options.modelOverride ?? rubric.modelId} (${rubric.outputType})`
+      }/${this.options.modelOverride ?? rubric.modelId} (${[
+        ...new Set(rubric.commands.map((command) => command.outputType))
+      ].join("+")})`
     );
   }
 
