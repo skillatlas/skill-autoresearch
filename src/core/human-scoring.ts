@@ -63,6 +63,92 @@ interface SessionCandidate {
   path: string;
 }
 
+const ARTIFACT_HEIGHT_MESSAGE_TYPE = "skill-autoresearch:artifact-height";
+const PREVIEW_VIEWPORTS = [480, 960] as const;
+const DEFAULT_PREVIEW_VIEWPORT = 960;
+const MIN_PREVIEW_HEIGHT = 320;
+const DEFAULT_PREVIEW_HEIGHT = 420;
+
+function buildArtifactHeightBridgeScript(): string {
+  return String.raw`<script>
+    (() => {
+      let scheduled = false;
+
+      const measureHeight = () => {
+        const root = document.documentElement;
+        const body = document.body;
+
+        return Math.max(
+          root ? root.scrollHeight : 0,
+          root ? root.offsetHeight : 0,
+          root ? root.clientHeight : 0,
+          body ? body.scrollHeight : 0,
+          body ? body.offsetHeight : 0,
+          body ? body.clientHeight : 0
+        );
+      };
+
+      const postHeight = () => {
+        scheduled = false;
+        window.parent.postMessage(
+          {
+            type: "${ARTIFACT_HEIGHT_MESSAGE_TYPE}",
+            height: measureHeight()
+          },
+          "*"
+        );
+      };
+
+      const schedulePost = () => {
+        if (scheduled) {
+          return;
+        }
+
+        scheduled = true;
+        window.requestAnimationFrame(postHeight);
+      };
+
+      window.addEventListener("load", schedulePost);
+      window.addEventListener("resize", schedulePost);
+      document.addEventListener("DOMContentLoaded", schedulePost);
+
+      if (typeof ResizeObserver === "function") {
+        const resizeObserver = new ResizeObserver(schedulePost);
+        if (document.documentElement) {
+          resizeObserver.observe(document.documentElement);
+        }
+        if (document.body) {
+          resizeObserver.observe(document.body);
+        }
+      }
+
+      if (typeof MutationObserver === "function" && document.documentElement) {
+        const mutationObserver = new MutationObserver(schedulePost);
+        mutationObserver.observe(document.documentElement, {
+          attributes: true,
+          characterData: true,
+          childList: true,
+          subtree: true
+        });
+      }
+
+      if (document.fonts && document.fonts.ready) {
+        document.fonts.ready.then(schedulePost).catch(() => {});
+      }
+
+      schedulePost();
+    })();
+  </script>`;
+}
+
+function injectScriptBeforeBodyClose(html: string, script: string): string {
+  if (/<\/body>/i.test(html)) {
+    return html.replace(/<\/body>/i, `${script}</body>`);
+  }
+
+  return `${html}${script}`;
+}
+
 function escapeHtml(value: string): string {
   return value
     .replaceAll("&", "&amp;")
@@ -104,12 +190,7 @@ function inferMimeType(filePath: string): string {
 }
 
 function rewriteHtml(html: string, basePath: string): string {
-  const withBase =
-    /<head[^>]*>/i.test(html)
-      ? html.replace(/<head([^>]*)>/i, `<head$1><base href="${basePath}">`)
-      : `<head><base href="${basePath}"></head>${html}`;
-
-  return withBase
+  const rewrittenPaths = html
     .replaceAll('href="/', `href="${basePath}`)
     .replaceAll("href='/", `href='${basePath}`)
     .replaceAll('src="/', `src="${basePath}`)
@@ -119,6 +200,13 @@ function rewriteHtml(html: string, basePath: string): string {
     .replaceAll("url(/", `url(${basePath}`)
     .replaceAll('url("/', `url("${basePath}`)
     .replaceAll("url('/", `url('${basePath}`);
+
+  const withBase =
+    /<head[^>]*>/i.test(rewrittenPaths)
+      ? rewrittenPaths.replace(/<head([^>]*)>/i, `<head$1><base href="${basePath}">`)
+      : `<head><base href="${basePath}"></head>${rewrittenPaths}`;
+
+  return injectScriptBeforeBodyClose(withBase, buildArtifactHeightBridgeScript());
 }
 
 async function listArtifactFiles(rootPath: string): Promise<string[]> {
@@ -754,6 +842,14 @@ export class LocalHumanReviewService implements HumanReviewService {
       }
 
       const files = await listArtifactFiles(resolvedPath);
+      const body = files
+        .map(
+          (filePath) =>
+            `<li><a href="${artifactBasePath}${encodeURI(filePath)}" target="_blank" rel="noreferrer">${escapeHtml(
+              filePath
+            )}</a></li>`
+        )
+        .join("");
       sendHtml(
         response,
         200,
@@ -780,14 +876,8 @@ export class LocalHumanReviewService implements HumanReviewService {
   <body>
     <h1>${escapeHtml(artifact.label)}</h1>
     <p>${escapeHtml(artifact.path)}</p>
-    <ul>${files
-      .map(
-        (filePath) =>
-          `<li><a href="${artifactBasePath}${encodeURI(filePath)}" target="_blank" rel="noreferrer">${escapeHtml(
-            filePath
-          )}</a></li>`
-      )
-      .join("")}</ul>
+    <ul>${body || "<li>No files found.</li>"}</ul>
+    ${buildArtifactHeightBridgeScript()}
   </body>
 </html>`
       );
@@ -931,7 +1021,7 @@ export class LocalHumanReviewService implements HumanReviewService {
 
       .panel {
         display: grid;
-        grid-template-rows: auto auto minmax(420px, 1fr);
+        align-content: start;
       }
 
       .panel-header {
@@ -962,18 +1052,41 @@ export class LocalHumanReviewService implements HumanReviewService {
       }
 
       .panel-path {
-        padding: 0 18px 12px;
         color: var(--muted);
         font-family: "Courier New", monospace;
         font-size: 12px;
         word-break: break-all;
       }
 
-      iframe {
+      .panel-copy {
+        padding: 0 18px 14px;
+      }
+
+      .preview-shell {
+        padding: 0 18px 18px;
+      }
+
+      .frame-wrap {
+        position: relative;
         width: 100%;
-        min-height: 420px;
+        min-height: ${MIN_PREVIEW_HEIGHT}px;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        background:
+          linear-gradient(180deg, rgba(23, 18, 13, 0.04), transparent 24%),
+          #ffffff;
+      }
+
+      .frame-wrap[data-scaled="true"] iframe {
+        position: absolute;
+        top: 0;
+      }
+
+      iframe {
+        display: block;
         border: 0;
         background: white;
+        transform-origin: top left;
       }
 
       .controls {
@@ -1001,6 +1114,32 @@ export class LocalHumanReviewService implements HumanReviewService {
         color: var(--muted);
       }
 
+      .controls-tools {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+        justify-content: flex-end;
+      }
+
+      .viewport-picker {
+        display: inline-flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        padding: 8px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.68);
+      }
+
+      .viewport-label {
+        color: var(--muted);
+        font-family: "Courier New", monospace;
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
       button,
       .link-button {
         appearance: none;
@@ -1018,6 +1157,18 @@ export class LocalHumanReviewService implements HumanReviewService {
       .link-button[data-variant="secondary"] {
         background: transparent;
         color: var(--ink);
+      }
+
+      button.viewport-button {
+        min-width: 72px;
+        padding: 9px 14px;
+        background: transparent;
+        color: var(--ink);
+      }
+
+      button.viewport-button[aria-pressed="true"] {
+        background: var(--ink);
+        color: #fffaf4;
       }
 
       button:disabled,
@@ -1044,16 +1195,21 @@ export class LocalHumanReviewService implements HumanReviewService {
           grid-template-columns: 1fr;
         }
 
+        .controls {
+          align-items: flex-start;
+        }
+
+        .controls-tools {
+          width: 100%;
+          justify-content: flex-start;
+        }
+
         .panel-header {
           flex-direction: column;
         }
 
         .panel-actions {
           justify-content: flex-start;
-        }
-
-        iframe {
-          min-height: 320px;
         }
       }
     </style>
@@ -1081,6 +1237,13 @@ export class LocalHumanReviewService implements HumanReviewService {
           <strong id="prompt-title">Connecting…</strong>
           <span id="prompt-meta"></span>
         </div>
+        <div class="controls-tools">
+          <div class="viewport-picker" role="group" aria-label="Preview viewport">
+            <span class="viewport-label">Viewport</span>
+            <button class="viewport-button" type="button" data-viewport="${PREVIEW_VIEWPORTS[0]}" aria-pressed="false">${PREVIEW_VIEWPORTS[0]}px</button>
+            <button class="viewport-button" type="button" data-viewport="${PREVIEW_VIEWPORTS[1]}" aria-pressed="false">${PREVIEW_VIEWPORTS[1]}px</button>
+          </div>
+        </div>
       </section>
 
       <section class="workspace">
@@ -1094,8 +1257,14 @@ export class LocalHumanReviewService implements HumanReviewService {
               <button id="vote-incumbent" type="button" data-winner="A">Incumbent wins</button>
             </div>
           </header>
-          <div class="panel-path" id="incumbent-path"></div>
-          <iframe id="incumbent-frame" title="Incumbent artifact" loading="eager"></iframe>
+          <div class="panel-copy">
+            <div class="panel-path" id="incumbent-path"></div>
+          </div>
+          <div class="preview-shell">
+            <div class="frame-wrap" id="incumbent-wrap">
+              <iframe id="incumbent-frame" title="Incumbent artifact" loading="eager"></iframe>
+            </div>
+          </div>
         </article>
         <article class="panel">
           <header class="panel-header">
@@ -1107,8 +1276,14 @@ export class LocalHumanReviewService implements HumanReviewService {
               <button id="vote-candidate" type="button" data-winner="B">Candidate wins</button>
             </div>
           </header>
-          <div class="panel-path" id="candidate-path"></div>
-          <iframe id="candidate-frame" title="Candidate artifact" loading="eager"></iframe>
+          <div class="panel-copy">
+            <div class="panel-path" id="candidate-path"></div>
+          </div>
+          <div class="preview-shell">
+            <div class="frame-wrap" id="candidate-wrap">
+              <iframe id="candidate-frame" title="Candidate artifact" loading="eager"></iframe>
+            </div>
+          </div>
         </article>
       </section>
 
@@ -1124,13 +1299,205 @@ export class LocalHumanReviewService implements HumanReviewService {
       const incumbentPath = document.getElementById("incumbent-path");
       const candidatePath = document.getElementById("candidate-path");
       const candidateLabel = document.getElementById("candidate-label");
+      const incumbentWrap = document.getElementById("incumbent-wrap");
+      const candidateWrap = document.getElementById("candidate-wrap");
       const incumbentFrame = document.getElementById("incumbent-frame");
       const candidateFrame = document.getElementById("candidate-frame");
       const openIncumbent = document.getElementById("open-incumbent");
       const openCandidate = document.getElementById("open-candidate");
       const status = document.getElementById("status");
       const voteButtons = Array.from(document.querySelectorAll("button[data-winner]"));
+      const viewportButtons = Array.from(document.querySelectorAll("button[data-viewport]"));
+
+      const VIEWPORT_STORAGE_KEY = "skill-autoresearch:human-scoring:viewport";
+      const FRAME_HEIGHT_MESSAGE_TYPE = "${ARTIFACT_HEIGHT_MESSAGE_TYPE}";
+      const DEFAULT_VIEWPORT_WIDTH = ${DEFAULT_PREVIEW_VIEWPORT};
+      const DEFAULT_FRAME_HEIGHT = ${DEFAULT_PREVIEW_HEIGHT};
+      const MIN_FRAME_HEIGHT = ${MIN_PREVIEW_HEIGHT};
       let currentSession = null;
+      let viewportWidth = loadViewportWidth();
+      const previewFrames = [
+        { frame: incumbentFrame, wrap: incumbentWrap },
+        { frame: candidateFrame, wrap: candidateWrap }
+      ];
+      const frameState = new WeakMap();
+
+      function normalizeViewportWidth(rawValue) {
+        const value = Number(rawValue);
+        return value === ${PREVIEW_VIEWPORTS[0]} ? ${PREVIEW_VIEWPORTS[0]} : ${PREVIEW_VIEWPORTS[1]};
+      }
+
+      function loadViewportWidth() {
+        try {
+          return normalizeViewportWidth(window.localStorage.getItem(VIEWPORT_STORAGE_KEY));
+        } catch (_error) {
+          return DEFAULT_VIEWPORT_WIDTH;
+        }
+      }
+
+      function saveViewportWidth(nextWidth) {
+        try {
+          window.localStorage.setItem(VIEWPORT_STORAGE_KEY, String(nextWidth));
+        } catch (_error) {
+          // Ignore storage access failures.
+        }
+      }
+
+      function getFrameState(frame) {
+        let state = frameState.get(frame);
+        if (!state) {
+          state = {
+            cleanup: null,
+            contentHeight: DEFAULT_FRAME_HEIGHT
+          };
+          frameState.set(frame, state);
+        }
+
+        return state;
+      }
+
+      function cleanupFrameState(frame) {
+        const state = getFrameState(frame);
+        if (typeof state.cleanup === "function") {
+          state.cleanup();
+        }
+
+        state.cleanup = null;
+      }
+
+      function updateViewportButtons() {
+        for (const button of viewportButtons) {
+          const pressed = Number(button.dataset.viewport) === viewportWidth;
+          button.setAttribute("aria-pressed", pressed ? "true" : "false");
+        }
+      }
+
+      function measureFrameHeight(frame) {
+        try {
+          const documentRoot = frame.contentDocument && frame.contentDocument.documentElement;
+          const documentBody = frame.contentDocument && frame.contentDocument.body;
+
+          return Math.max(
+            documentRoot ? documentRoot.scrollHeight : 0,
+            documentRoot ? documentRoot.offsetHeight : 0,
+            documentRoot ? documentRoot.clientHeight : 0,
+            documentBody ? documentBody.scrollHeight : 0,
+            documentBody ? documentBody.offsetHeight : 0,
+            documentBody ? documentBody.clientHeight : 0
+          );
+        } catch (_error) {
+          return 0;
+        }
+      }
+
+      function updateFrameHeight(frame, nextHeight) {
+        if (!Number.isFinite(nextHeight) || nextHeight <= 0) {
+          return;
+        }
+
+        const state = getFrameState(frame);
+        state.contentHeight = Math.max(MIN_FRAME_HEIGHT, Math.round(nextHeight));
+        layoutPreviewFrames();
+      }
+
+      function layoutPreviewFrame(preview) {
+        if (!preview || !preview.frame || !preview.wrap) {
+          return;
+        }
+
+        const wrapWidth = preview.wrap.clientWidth;
+        if (wrapWidth === 0) {
+          return;
+        }
+
+        const state = getFrameState(preview.frame);
+        const intrinsicHeight = Math.max(MIN_FRAME_HEIGHT, state.contentHeight || DEFAULT_FRAME_HEIGHT);
+        const scale = Math.min(1, wrapWidth / viewportWidth);
+        const scaledWidth = viewportWidth * scale;
+        const scaledHeight = intrinsicHeight * scale;
+        const horizontalOffset = Math.max(0, Math.round((wrapWidth - scaledWidth) / 2));
+
+        preview.wrap.dataset.scaled = scale < 0.999 ? "true" : "false";
+        preview.wrap.style.height = Math.max(MIN_FRAME_HEIGHT, Math.round(scaledHeight)) + "px";
+        preview.frame.style.position = "absolute";
+        preview.frame.style.top = "0px";
+        preview.frame.style.width = viewportWidth + "px";
+        preview.frame.style.height = intrinsicHeight + "px";
+        preview.frame.style.left = horizontalOffset + "px";
+        preview.frame.style.transform = "scale(" + scale + ")";
+      }
+
+      function layoutPreviewFrames() {
+        for (const preview of previewFrames) {
+          layoutPreviewFrame(preview);
+        }
+      }
+
+      function installFrameObservers(preview) {
+        cleanupFrameState(preview.frame);
+
+        const frameWindow = preview.frame.contentWindow;
+        const frameDocument = preview.frame.contentDocument;
+        if (!frameWindow || !frameDocument) {
+          return;
+        }
+
+        let queued = false;
+        const requestMeasurement = () => {
+          if (queued) {
+            return;
+          }
+
+          queued = true;
+          window.requestAnimationFrame(() => {
+            queued = false;
+            updateFrameHeight(preview.frame, measureFrameHeight(preview.frame));
+          });
+        };
+
+        let resizeObserver = null;
+        if (typeof frameWindow.ResizeObserver === "function") {
+          resizeObserver = new frameWindow.ResizeObserver(requestMeasurement);
+          if (frameDocument.documentElement) {
+            resizeObserver.observe(frameDocument.documentElement);
+          }
+          if (frameDocument.body) {
+            resizeObserver.observe(frameDocument.body);
+          }
+        }
+
+        let mutationObserver = null;
+        if (
+          typeof frameWindow.MutationObserver === "function" &&
+          frameDocument.documentElement
+        ) {
+          mutationObserver = new frameWindow.MutationObserver(requestMeasurement);
+          mutationObserver.observe(frameDocument.documentElement, {
+            attributes: true,
+            characterData: true,
+            childList: true,
+            subtree: true
+          });
+        }
+
+        frameWindow.addEventListener("resize", requestMeasurement);
+        if (frameDocument.fonts && frameDocument.fonts.ready) {
+          frameDocument.fonts.ready.then(requestMeasurement).catch(() => {});
+        }
+
+        const state = getFrameState(preview.frame);
+        state.cleanup = () => {
+          if (resizeObserver) {
+            resizeObserver.disconnect();
+          }
+          if (mutationObserver) {
+            mutationObserver.disconnect();
+          }
+          frameWindow.removeEventListener("resize", requestMeasurement);
+        };
+
+        requestMeasurement();
+      }
 
       function setVotingEnabled(enabled) {
         for (const button of voteButtons) {
@@ -1140,12 +1507,57 @@ export class LocalHumanReviewService implements HumanReviewService {
         openCandidate.setAttribute("aria-disabled", enabled ? "false" : "true");
       }
 
+      function resetPreviewFrame(preview) {
+        cleanupFrameState(preview.frame);
+        const state = getFrameState(preview.frame);
+        state.contentHeight = DEFAULT_FRAME_HEIGHT;
+        preview.wrap.style.height = DEFAULT_FRAME_HEIGHT + "px";
+        preview.wrap.dataset.scaled = "false";
+        preview.frame.style.position = "absolute";
+        preview.frame.style.top = "0px";
+        preview.frame.style.width = viewportWidth + "px";
+        preview.frame.style.height = DEFAULT_FRAME_HEIGHT + "px";
+        preview.frame.style.left = "0px";
+        preview.frame.style.transform = "scale(1)";
+      }
+
+      function clearPreviewFrame(preview) {
+        cleanupFrameState(preview.frame);
+        preview.wrap.style.height = DEFAULT_FRAME_HEIGHT + "px";
+        preview.wrap.dataset.scaled = "false";
+        preview.frame.style.position = "absolute";
+        preview.frame.style.top = "0px";
+        preview.frame.style.left = "0px";
+        preview.frame.style.transform = "scale(1)";
+        preview.frame.removeAttribute("src");
+      }
+
+      function updateViewportWidth(nextWidth) {
+        viewportWidth = normalizeViewportWidth(nextWidth);
+        saveViewportWidth(viewportWidth);
+        updateViewportButtons();
+        layoutPreviewFrames();
+      }
+
+      function handleFrameMessage(event) {
+        if (!event.data || event.data.type !== FRAME_HEIGHT_MESSAGE_TYPE) {
+          return;
+        }
+
+        const preview = previewFrames.find((candidate) => candidate.frame.contentWindow === event.source);
+        if (!preview) {
+          return;
+        }
+
+        updateFrameHeight(preview.frame, Number(event.data.height));
+      }
+
       function clearFrames() {
         incumbentPath.textContent = "";
         candidatePath.textContent = "";
         candidateLabel.textContent = "Candidate";
-        incumbentFrame.removeAttribute("src");
-        candidateFrame.removeAttribute("src");
+        clearPreviewFrame(previewFrames[0]);
+        clearPreviewFrame(previewFrames[1]);
         openIncumbent.href = "#";
         openCandidate.href = "#";
       }
@@ -1184,10 +1596,13 @@ export class LocalHumanReviewService implements HumanReviewService {
         candidateLabel.textContent = "Candidate " + session.current.candidateIndex;
         incumbentPath.textContent = session.current.incumbentPath;
         candidatePath.textContent = session.current.candidatePath;
+        resetPreviewFrame(previewFrames[0]);
+        resetPreviewFrame(previewFrames[1]);
         incumbentFrame.src = session.current.incumbentUrl;
         candidateFrame.src = session.current.candidateUrl;
         openIncumbent.href = session.current.incumbentUrl;
         openCandidate.href = session.current.candidateUrl;
+        layoutPreviewFrames();
         setVotingEnabled(true);
         status.textContent = "Choose the stronger artifact for this comparison.";
       }
@@ -1235,6 +1650,37 @@ export class LocalHumanReviewService implements HumanReviewService {
           submitVote(button.dataset.winner);
         });
       });
+
+      viewportButtons.forEach((button) => {
+        button.addEventListener("click", () => {
+          updateViewportWidth(button.dataset.viewport);
+        });
+      });
+
+      previewFrames.forEach((preview) => {
+        preview.frame.addEventListener("load", () => {
+          updateFrameHeight(preview.frame, measureFrameHeight(preview.frame));
+          installFrameObservers(preview);
+        });
+      });
+
+      const previewResizeObserver =
+        typeof ResizeObserver === "function"
+          ? new ResizeObserver(() => {
+              layoutPreviewFrames();
+            })
+          : null;
+      if (previewResizeObserver) {
+        previewFrames.forEach((preview) => {
+          previewResizeObserver.observe(preview.wrap);
+        });
+      } else {
+        window.addEventListener("resize", layoutPreviewFrames);
+      }
+
+      window.addEventListener("message", handleFrameMessage);
+      updateViewportButtons();
+      layoutPreviewFrames();
 
       loadInitialSession().catch((error) => {
         status.textContent = error instanceof Error ? error.message : String(error);
