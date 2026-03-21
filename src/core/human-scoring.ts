@@ -73,6 +73,7 @@ function buildArtifactHeightBridgeScript(): string {
   return String.raw`<script>
     (() => {
       let scheduled = false;
+      let lastViewportWidth = window.innerWidth;
 
       const measureHeight = () => {
         const root = document.documentElement;
@@ -81,10 +82,8 @@ function buildArtifactHeightBridgeScript(): string {
         return Math.max(
           root ? root.scrollHeight : 0,
           root ? root.offsetHeight : 0,
-          root ? root.clientHeight : 0,
           body ? body.scrollHeight : 0,
-          body ? body.offsetHeight : 0,
-          body ? body.clientHeight : 0
+          body ? body.offsetHeight : 0
         );
       };
 
@@ -108,19 +107,19 @@ function buildArtifactHeightBridgeScript(): string {
         window.requestAnimationFrame(postHeight);
       };
 
-      window.addEventListener("load", schedulePost);
-      window.addEventListener("resize", schedulePost);
-      document.addEventListener("DOMContentLoaded", schedulePost);
+      window.addEventListener("load", () => {
+        lastViewportWidth = window.innerWidth;
+        schedulePost();
+      });
+      window.addEventListener("resize", () => {
+        if (window.innerWidth === lastViewportWidth) {
+          return;
+        }
 
-      if (typeof ResizeObserver === "function") {
-        const resizeObserver = new ResizeObserver(schedulePost);
-        if (document.documentElement) {
-          resizeObserver.observe(document.documentElement);
-        }
-        if (document.body) {
-          resizeObserver.observe(document.body);
-        }
-      }
+        lastViewportWidth = window.innerWidth;
+        schedulePost();
+      });
+      document.addEventListener("DOMContentLoaded", schedulePost);
 
       if (typeof MutationObserver === "function" && document.documentElement) {
         const mutationObserver = new MutationObserver(schedulePost);
@@ -1380,10 +1379,8 @@ export class LocalHumanReviewService implements HumanReviewService {
           return Math.max(
             documentRoot ? documentRoot.scrollHeight : 0,
             documentRoot ? documentRoot.offsetHeight : 0,
-            documentRoot ? documentRoot.clientHeight : 0,
             documentBody ? documentBody.scrollHeight : 0,
-            documentBody ? documentBody.offsetHeight : 0,
-            documentBody ? documentBody.clientHeight : 0
+            documentBody ? documentBody.offsetHeight : 0
           );
         } catch (_error) {
           return 0;
@@ -1436,9 +1433,8 @@ export class LocalHumanReviewService implements HumanReviewService {
       function installFrameObservers(preview) {
         cleanupFrameState(preview.frame);
 
-        const frameWindow = preview.frame.contentWindow;
         const frameDocument = preview.frame.contentDocument;
-        if (!frameWindow || !frameDocument) {
+        if (!frameDocument || !frameDocument.documentElement) {
           return;
         }
 
@@ -1455,23 +1451,9 @@ export class LocalHumanReviewService implements HumanReviewService {
           });
         };
 
-        let resizeObserver = null;
-        if (typeof frameWindow.ResizeObserver === "function") {
-          resizeObserver = new frameWindow.ResizeObserver(requestMeasurement);
-          if (frameDocument.documentElement) {
-            resizeObserver.observe(frameDocument.documentElement);
-          }
-          if (frameDocument.body) {
-            resizeObserver.observe(frameDocument.body);
-          }
-        }
-
         let mutationObserver = null;
-        if (
-          typeof frameWindow.MutationObserver === "function" &&
-          frameDocument.documentElement
-        ) {
-          mutationObserver = new frameWindow.MutationObserver(requestMeasurement);
+        if (typeof MutationObserver === "function") {
+          mutationObserver = new MutationObserver(requestMeasurement);
           mutationObserver.observe(frameDocument.documentElement, {
             attributes: true,
             characterData: true,
@@ -1480,23 +1462,30 @@ export class LocalHumanReviewService implements HumanReviewService {
           });
         }
 
-        frameWindow.addEventListener("resize", requestMeasurement);
         if (frameDocument.fonts && frameDocument.fonts.ready) {
           frameDocument.fonts.ready.then(requestMeasurement).catch(() => {});
         }
 
         const state = getFrameState(preview.frame);
         state.cleanup = () => {
-          if (resizeObserver) {
-            resizeObserver.disconnect();
-          }
           if (mutationObserver) {
             mutationObserver.disconnect();
           }
-          frameWindow.removeEventListener("resize", requestMeasurement);
         };
 
         requestMeasurement();
+      }
+
+      function isHtmlFrame(frame) {
+        try {
+          return Boolean(
+            frame.contentDocument &&
+              typeof frame.contentDocument.contentType === "string" &&
+              frame.contentDocument.contentType.includes("html")
+          );
+        } catch (_error) {
+          return false;
+        }
       }
 
       function setVotingEnabled(enabled) {
@@ -1660,7 +1649,9 @@ export class LocalHumanReviewService implements HumanReviewService {
       previewFrames.forEach((preview) => {
         preview.frame.addEventListener("load", () => {
           updateFrameHeight(preview.frame, measureFrameHeight(preview.frame));
-          installFrameObservers(preview);
+          if (!isHtmlFrame(preview.frame)) {
+            installFrameObservers(preview);
+          }
         });
       });
 
