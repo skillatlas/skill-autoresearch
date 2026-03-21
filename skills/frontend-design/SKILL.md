@@ -36,9 +36,18 @@ Focus on:
 - **Spatial Composition**: Unexpected layouts. Asymmetry. Overlap. Diagonal flow. Grid-breaking elements. Generous negative space OR controlled density.
 - **Backgrounds & Visual Details**: Create atmosphere and depth rather than defaulting to solid colors. Add contextual effects and textures that match the overall aesthetic. Apply creative forms like gradient meshes, noise textures, geometric patterns, layered transparencies, dramatic shadows, decorative borders, custom cursors, and grain overlays.
 
-NEVER use generic AI-generated aesthetics like overused font families (Inter, Roboto, Arial, system fonts), cliched color schemes (particularly purple gradients on white backgrounds), predictable layouts and component patterns, and cookie-cutter design that lacks context-specific character.
+### Anti-patterns: Specific traps to avoid
 
-Interpret creatively and make unexpected choices that feel genuinely designed for the context. No design should be the same. Vary between light and dark themes, different fonts, different aesthetics. NEVER converge on common choices (Space Grotesk, for example) across generations.
+These are the telltale signs of generic AI-generated frontend. Each is testable — if your output matches any of these, redesign that element:
+
+- **The default stack**: A full-width hero with centered headline → a row of three equal-width feature cards with icons above text → a testimonial section → a centered CTA button. This exact layout skeleton is the most common AI output. Break it structurally — vary column counts, use asymmetric grids, overlap sections, or eliminate sections entirely.
+- **Safe font syndrome**: Reaching for the same well-known geometric sans-serifs across every generation. Before selecting a typeface, consider the content's personality — a poetry site and a fintech dashboard should never share the same typographic voice.
+- **The purple-blue gradient**: Purple-to-blue or purple-to-pink gradients on white/light backgrounds have become the default AI color palette. Derive your palette from the content's mood, era, and audience instead.
+- **Decorative sameness**: Rounded rectangles with soft shadows, blurred gradient blobs as background decoration, and pill-shaped buttons appearing together. These elements aren't individually bad, but their combination has become a cliché. If you use one, make the others sharp and unexpected.
+- **Uniform spacing monotony**: Every section having identical padding, every card having the same gap, every element breathing the same amount. Vary spatial rhythm intentionally — some sections should be dense and compressed, others expansive.
+- **Emoji-as-icon laziness**: Using emoji or generic icon libraries as the primary visual element in cards/features. Design custom visual treatments or use typography, color, and shape to create visual interest instead.
+
+Interpret creatively and make unexpected choices that feel genuinely designed for the context. No design should be the same. Vary between light and dark themes, different fonts, different aesthetics.
 
 **IMPORTANT**: Match implementation complexity to the aesthetic vision. Maximalist designs need elaborate code with extensive animations and effects. Minimalist or refined designs need restraint, precision, and careful attention to spacing, typography, and subtle details. Elegance comes from executing the vision well.
 
