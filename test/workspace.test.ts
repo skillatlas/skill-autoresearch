@@ -72,4 +72,21 @@ describe("workspace sandboxes", () => {
     expect(workspace.paths.stepsDir).toBe(path.join(workspaceRoot, "steps"));
     expect(workspace.paths.archiveDir).toBe(path.join(workspaceRoot, "archive"));
   });
+
+  it("creates steps and archive directories during validation when they are missing", async () => {
+    const workspaceRoot = await createWorkspaceCopy();
+    const workspace = new WorkspaceManager(workspaceRoot, new Logger(false));
+
+    await fs.remove(workspace.paths.stepsDir);
+    await fs.remove(workspace.paths.archiveDir);
+
+    await workspace.validateSourceInputs({
+      scoringMode: "rubric"
+    });
+
+    expect(await fs.pathExists(workspace.paths.stepsDir)).toBe(true);
+    expect(await fs.pathExists(workspace.paths.archiveDir)).toBe(true);
+    expect((await fs.stat(workspace.paths.stepsDir)).isDirectory()).toBe(true);
+    expect((await fs.stat(workspace.paths.archiveDir)).isDirectory()).toBe(true);
+  });
 });
