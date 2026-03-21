@@ -7,6 +7,7 @@ import {
   FakeScorer,
   readRunState,
   readSkillVersion,
+  readSkillVersionFromPath,
   runOrchestrator
 } from "./helpers.js";
 
@@ -161,6 +162,12 @@ describe("orchestrator integration", () => {
     expect(await fs.pathExists(path.join(workspaceRoot, "steps", "0", "baseline", "index.html"))).toBe(
       true
     );
+    expect(
+      await readSkillVersionFromPath(
+        workspaceRoot,
+        "steps/0/baseline/skills/demo/SKILL.md"
+      )
+    ).toBe(0);
   });
 
   it("archives old steps and promotes a step winner by candidate majority", async () => {
@@ -201,6 +208,24 @@ describe("orchestrator integration", () => {
     );
     expect(await readSkillVersion(workspaceRoot)).toBe(2);
     expect(state.incumbentPath).toBe("steps/1/candidates/0");
+    expect(
+      await readSkillVersionFromPath(
+        workspaceRoot,
+        "steps/1/candidates/0/skills/demo/SKILL.md"
+      )
+    ).toBe(2);
+    expect(
+      await readSkillVersionFromPath(
+        workspaceRoot,
+        "steps/1/candidates/1/skills/demo/SKILL.md"
+      )
+    ).toBe(2);
+    expect(
+      await readSkillVersionFromPath(
+        workspaceRoot,
+        "steps/1/candidates/2/skills/demo/SKILL.md"
+      )
+    ).toBe(2);
   });
 
   it("runs candidate generations concurrently", async () => {

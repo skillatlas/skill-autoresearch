@@ -3,10 +3,14 @@ import path from "node:path";
 
 import { Logger } from "../src/core/logger.js";
 import { WorkspaceManager } from "../src/core/workspace.js";
-import { createWorkspaceCopy, readSkillVersion } from "./helpers.js";
+import {
+  createWorkspaceCopy,
+  readSkillVersion,
+  readSkillVersionFromPath
+} from "./helpers.js";
 
 describe("workspace sandboxes", () => {
-  it("creates generation-local skill links and cleans them up", async () => {
+  it("creates generation-local skill links and preserves the copied skills snapshot", async () => {
     const workspaceRoot = await createWorkspaceCopy();
     const workspace = new WorkspaceManager(workspaceRoot, new Logger(false));
     const candidateDir = path.join(workspaceRoot, "steps", "1", "candidates", "0");
@@ -29,7 +33,13 @@ describe("workspace sandboxes", () => {
 
     await sandbox.cleanup();
 
-    expect(await fs.pathExists(path.join(candidateDir, "skills"))).toBe(false);
+    expect(await fs.pathExists(path.join(candidateDir, "skills"))).toBe(true);
+    expect(
+      await readSkillVersionFromPath(
+        workspaceRoot,
+        "steps/1/candidates/0/skills/demo/SKILL.md"
+      )
+    ).toBe(0);
     expect(await fs.pathExists(path.join(candidateDir, ".claude"))).toBe(false);
     expect(await fs.pathExists(path.join(candidateDir, ".agents"))).toBe(false);
   });

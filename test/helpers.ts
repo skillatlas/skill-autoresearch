@@ -42,10 +42,14 @@ export async function readRunState(workspaceRoot: string): Promise<RunState> {
 }
 
 export async function readSkillVersion(workspaceRoot: string): Promise<number> {
-  const rawSkill = await fs.readFile(
-    path.join(workspaceRoot, "skills", "demo", "SKILL.md"),
-    "utf8"
-  );
+  return readSkillVersionFromPath(workspaceRoot, "skills/demo/SKILL.md");
+}
+
+export async function readSkillVersionFromPath(
+  workspaceRoot: string,
+  relativePath: string
+): Promise<number> {
+  const rawSkill = await fs.readFile(path.join(workspaceRoot, relativePath), "utf8");
   return Number.parseInt(rawSkill.match(/version=(\d+)/)?.[1] ?? "0", 10);
 }
 
