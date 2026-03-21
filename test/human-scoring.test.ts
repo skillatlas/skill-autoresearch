@@ -89,10 +89,13 @@ describe("LocalHumanReviewService", () => {
     expect(shellResponse.ok).toBe(true);
     expect(shellHtml).toContain('data-viewport="480"');
     expect(shellHtml).toContain('data-viewport="960"');
+    expect(shellHtml).toContain(".controls-tools[hidden]");
+    expect(shellHtml).toContain('id="preview-controls" hidden');
     expect(shellHtml).toContain(".workspace[hidden]");
     expect(shellHtml).toContain('id="review-workspace" hidden');
     expect(shellHtml).toContain('id="incumbent-preview" hidden');
     expect(shellHtml).toContain('id="candidate-preview" hidden');
+    expect(shellHtml).toContain('id="status" hidden');
 
     const sessionResponse = await fetch(`${baseUrl}/api/session`);
     const session = (await sessionResponse.json()) as {
