@@ -35,6 +35,7 @@ Focus on:
 - **Motion**: Use animations for effects and micro-interactions. Prioritize CSS-only solutions for HTML. Use Motion library for React when available. Focus on high-impact moments: one well-orchestrated page load with staggered reveals (animation-delay) creates more delight than scattered micro-interactions. Use scroll-triggering and hover states that surprise.
 - **Spatial Composition**: Unexpected layouts. Asymmetry. Overlap. Diagonal flow. Grid-breaking elements. Generous negative space OR controlled density.
 - **Backgrounds & Visual Details**: Create atmosphere and depth rather than defaulting to solid colors. Add contextual effects and textures that match the overall aesthetic. Apply creative forms like gradient meshes, noise textures, geometric patterns, layered transparencies, dramatic shadows, decorative borders, custom cursors, and grain overlays.
+- **Interactive States**: Every clickable and focusable element needs a complete state story — default, hover, focus-visible, active, and where relevant, disabled. These shouldn't be afterthoughts; design them as part of the element's identity. Hover transitions should feel physical — elements that shift, lift, reveal, or transform rather than simply changing color. Focus states must be visible and beautiful, not just a browser default outline; treat them as a design opportunity. Use `prefers-reduced-motion` to offer graceful fallbacks. State transitions should have consistent timing curves and durations that match the overall motion personality — snappy for energetic interfaces, smooth and deliberate for refined ones.
 
 ### Anti-patterns: Specific traps to avoid
 
@@ -47,8 +48,14 @@ These are the telltale signs of generic AI-generated frontend. Each is testable 
 - **Uniform spacing monotony**: Every section having identical padding, every card having the same gap, every element breathing the same amount. Vary spatial rhythm intentionally — some sections should be dense and compressed, others expansive.
 - **Emoji-as-icon laziness**: Using emoji or generic icon libraries as the primary visual element in cards/features. Design custom visual treatments or use typography, color, and shape to create visual interest instead.
 
-Interpret creatively and make unexpected choices that feel genuinely designed for the context. No design should be the same. Vary between light and dark themes, different fonts, different aesthetics.
+### Design matches content
+
+Consider these before committing to a direction:
+
+- **Challenge your first instinct**: Your default layout, color temperature, and font category are your rut. Name your first instinct explicitly, then design a second option that contradicts it structurally. Evaluate both honestly before proceeding.
+- **Vary the entry point**: Not every page opens with a hero. Consider leading with typography, a provocative question, an interaction, a full-bleed image, a data point, or silence (negative space). The opening sets the entire tone — never default it.
+- **Rotate color temperature**: If you're reaching for cool tones (blues, purples, teals), force yourself to explore warm palettes, earth tones, high-contrast monochromes, or desaturated neutrals with a single vivid accent. Let the content's emotional register — not habit — choose the temperature.
+- **Alternate density and pace**: Consciously vary the ratio of whitespace to content. Some interfaces should feel like a magazine spread — open, rhythmic, contemplative. Others should feel like a cockpit — dense, efficient, information-rich. The content dictates which.
+- **Shift the texture layer**: Flat-and-clean is one option among many. Grainy and tactile, glossy and dimensional, hand-drawn and organic, geometric and precise, photographic and immersive — the surface treatment alone can make identical structures feel like different products.
 
 **IMPORTANT**: Match implementation complexity to the aesthetic vision. Maximalist designs need elaborate code with extensive animations and effects. Minimalist or refined designs need restraint, precision, and careful attention to spacing, typography, and subtle details. Elegance comes from executing the vision well.
-
-Remember: Claude is capable of extraordinary creative work. Don't hold back, show what can truly be created when thinking outside the box and committing fully to a distinctive vision.
