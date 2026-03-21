@@ -1249,7 +1249,7 @@ export class LocalHumanReviewService implements HumanReviewService {
         </div>
       </section>
 
-      <section class="workspace">
+      <section class="workspace" id="review-workspace" hidden>
         <article class="panel">
           <header class="panel-header">
             <div class="panel-heading">
@@ -1299,6 +1299,7 @@ export class LocalHumanReviewService implements HumanReviewService {
       const progressFill = document.getElementById("progress-fill");
       const promptTitle = document.getElementById("prompt-title");
       const promptMeta = document.getElementById("prompt-meta");
+      const reviewWorkspace = document.getElementById("review-workspace");
       const incumbentPath = document.getElementById("incumbent-path");
       const candidatePath = document.getElementById("candidate-path");
       const candidateLabel = document.getElementById("candidate-label");
@@ -1558,6 +1559,7 @@ export class LocalHumanReviewService implements HumanReviewService {
       }
 
       function setPreviewVisibility(visible) {
+        reviewWorkspace.hidden = !visible;
         incumbentPreview.hidden = !visible;
         candidatePreview.hidden = !visible;
 
