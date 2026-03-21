@@ -12,6 +12,7 @@ describe("rubric parsing", () => {
     await fs.writeFile(
       rubricPath,
       `---
+provider: openrouter
 model: openai/gpt-4.1
 outputType: text
 command: cat "$STEP_PATH/index.html"
@@ -36,6 +37,7 @@ Judge the outputs.`,
     await fs.writeFile(
       rubricPath,
       `---
+provider: openrouter
 model: openai/gpt-4.1
 outputType: image
 commands:
@@ -63,6 +65,7 @@ Judge the screenshots.`,
     await fs.writeFile(
       rubricPath,
       `---
+provider: openrouter
 model: openai/gpt-4.1
 outputType: text
 commands:
@@ -75,6 +78,25 @@ Judge the outputs.`,
 
     const rubric = await loadRubric(rubricPath);
     expect(rubric.commands).toEqual([{ command: 'cat "$STEP_PATH/index.html"' }]);
+  });
+
+  it("requires an explicit scoring provider", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "rubric-"));
+    const rubricPath = path.join(tempDir, "RUBRIC.md");
+
+    await fs.writeFile(
+      rubricPath,
+      `---
+model: openai/gpt-4.1
+outputType: text
+command: cat "$STEP_PATH/index.html"
+---
+
+Judge the outputs.`,
+      "utf8"
+    );
+
+    await expect(loadRubric(rubricPath)).rejects.toThrow();
   });
 
   it("supports an explicit scoring provider", async () => {
