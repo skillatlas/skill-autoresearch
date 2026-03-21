@@ -4,6 +4,7 @@ import path from "node:path";
 import {
   createWorkspaceCopy,
   FakeContainerRunner,
+  FakeHumanReviewService,
   FakeScorer,
   readRunState,
   readSkillVersion,
@@ -394,6 +395,110 @@ describe("orchestrator integration", () => {
     expect(finalState.activeCandidates).toHaveLength(0);
     expect(finalState.history[0].accepted).toBe(true);
     expect(resumeScorer.voteCalls).toBe(2);
+  });
+
+  it("supports human scoring without RUBRIC.md", async () => {
+    const workspaceRoot = await createWorkspaceCopy();
+    await fs.remove(path.join(workspaceRoot, "RUBRIC.md"));
+    const humanReview = new FakeHumanReviewService({
+      "0:0": "B",
+      "1:0": "A"
+    });
+
+    await runOrchestrator({
+      workspaceRoot,
+      options: {
+        scoringMode: "human",
+        candidateCount: 2,
+        voteCount: 1,
+        maxSteps: 1
+      },
+      containerRunner: new FakeContainerRunner(workspaceRoot, {
+        candidateScores: {
+          "1:0": 5,
+          "1:1": 1
+        }
+      }),
+      scorer: new FakeScorer(workspaceRoot),
+      humanReview
+    });
+
+    const state = await readRunState(workspaceRoot);
+    expect(humanReview.sessions).toBe(1);
+    expect(state.scoringMode).toBe("human");
+    expect(state.history[0]).toMatchObject({
+      accepted: false,
+      winningCandidateIndexes: [0]
+    });
+    expect(state.history[0].incumbentPath).toBe("steps/0/baseline");
+  });
+
+  it("resumes human scoring from the persisted vote count", async () => {
+    const workspaceRoot = await createWorkspaceCopy();
+    const partialHumanReview = {
+      async reviewCandidates(input: Parameters<FakeHumanReviewService["reviewCandidates"]>[0]) {
+        await input.onVote({
+          candidateIndex: 0,
+          vote: {
+            winner: "B" as const,
+            confidence: 1,
+            rationale: "First human vote."
+          }
+        });
+        throw new Error("Injected human scoring failure");
+      }
+    };
+
+    await expect(
+      runOrchestrator({
+        workspaceRoot,
+        options: {
+          scoringMode: "human",
+          candidateCount: 1,
+          voteCount: 2,
+          maxSteps: 1
+        },
+        containerRunner: new FakeContainerRunner(workspaceRoot, {
+          candidateScores: {
+            "1:0": 4
+          }
+        }),
+        scorer: new FakeScorer(workspaceRoot),
+        humanReview: partialHumanReview
+      })
+    ).rejects.toThrow("Injected human scoring failure");
+
+    const intermediateState = await readRunState(workspaceRoot);
+    expect(intermediateState.currentPhase).toBe("score");
+    expect(intermediateState.activeCandidates[0].votes).toHaveLength(1);
+
+    const resumeHumanReview = new FakeHumanReviewService({
+      "0:1": "B"
+    });
+    await runOrchestrator({
+      workspaceRoot,
+      options: {
+        scoringMode: "human",
+        candidateCount: 1,
+        voteCount: 2,
+        maxSteps: 1,
+        resume: true
+      },
+      containerRunner: new FakeContainerRunner(workspaceRoot, {
+        candidateScores: {
+          "1:0": 4
+        }
+      }),
+      scorer: new FakeScorer(workspaceRoot),
+      humanReview: resumeHumanReview
+    });
+
+    const finalState = await readRunState(workspaceRoot);
+    expect(resumeHumanReview.sessions).toBe(1);
+    expect(finalState.history[0]).toMatchObject({
+      accepted: true,
+      promotedCandidateIndex: 0
+    });
   });
 
   it("uses the scoring provider from the rubric", async () => {

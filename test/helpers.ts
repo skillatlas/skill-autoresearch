@@ -7,6 +7,7 @@ import {
   ContainerExecution,
   ContainerRunner
 } from "../src/core/container-runner.js";
+import { HumanReviewService } from "../src/core/human-scoring.js";
 import { Logger } from "../src/core/logger.js";
 import { Orchestrator, RunOptions } from "../src/core/orchestrator.js";
 import {
@@ -222,11 +223,40 @@ export class FakeScorer implements ScoringService {
   }
 }
 
+export class FakeHumanReviewService implements HumanReviewService {
+  public sessions = 0;
+
+  public constructor(
+    private readonly decisions: Record<string, "A" | "B"> = {}
+  ) {}
+
+  public async reviewCandidates(
+    input: Parameters<HumanReviewService["reviewCandidates"]>[0]
+  ): Promise<void> {
+    this.sessions += 1;
+
+    for (const candidate of input.candidates) {
+      for (let attempt = candidate.completedVotes; attempt < input.voteCount; attempt += 1) {
+        const winner = this.decisions[`${candidate.index}:${attempt}`] ?? "B";
+        await input.onVote({
+          candidateIndex: candidate.index,
+          vote: {
+            winner,
+            confidence: 1,
+            rationale: "Fake human review."
+          }
+        });
+      }
+    }
+  }
+}
+
 export async function runOrchestrator(input: {
   workspaceRoot: string;
   options?: Partial<RunOptions>;
   containerRunner: ContainerRunner;
   scorer: ScoringService;
+  humanReview?: HumanReviewService;
 }): Promise<RunState | undefined> {
   const logger = new Logger(false);
   const workspace = new WorkspaceManager(input.workspaceRoot, logger);
@@ -235,9 +265,11 @@ export async function runOrchestrator(input: {
     new StateStore(workspace.paths.statePath, logger),
     input.containerRunner,
     input.scorer,
+    input.humanReview ?? new FakeHumanReviewService(),
     logger,
     {
       workspaceRoot: input.workspaceRoot,
+      scoringMode: "rubric",
       candidateCount: 3,
       voteCount: 3,
       minSteps: 0,

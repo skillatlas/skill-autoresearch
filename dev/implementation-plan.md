@@ -1,5 +1,16 @@
 # skill-autoresearch Implementation Plan
 
+## Current extension: human scoring mode
+
+Add an explicit human review path alongside rubric scoring:
+
+- `skill-autoresearch run --scoring-mode human` starts a local HTTP server and blocks until the reviewer chooses an incumbent or candidate winner for each generated candidate
+- human mode does not require `RUBRIC.md` or rubric provider credentials
+- automated rubric scoring remains the default path and keeps its current behavior
+- run state persists the selected scoring mode so resume cannot silently switch modes mid-run
+- the review UI serves each artifact directory locally and renders incumbent vs candidate side by side with one-click winner submission
+- human choices are stored as normal vote records so promotion/rejection logic stays unchanged
+
 ## Problem
 
 Build a TypeScript CLI named `skill-autoresearch` that iteratively improves a skill folder by:
