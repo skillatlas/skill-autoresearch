@@ -90,6 +90,60 @@ describe("scoring helpers", () => {
     ).rejects.toThrow("does not match the expected image/png format");
   });
 
+  it("includes rubric command output when evidence collection fails", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "scorer-"));
+    await fs.ensureDir(path.join(workspaceRoot, "step"));
+    const scorer = new Scorer(
+      workspaceRoot,
+      new Logger(false),
+      {
+        openrouter: {
+          async generateVote() {
+            throw new Error("generateVote should not be called in this test");
+          }
+        },
+        codex: {
+          async generateVote() {
+            throw new Error("generateVote should not be called in this test");
+          }
+        }
+      },
+      false
+    );
+
+    let thrownError: Error | undefined;
+
+    try {
+      await scorer.collectEvidence(
+        {
+          sourcePath: "RUBRIC.md",
+          provider: "openrouter",
+          modelId: "test-model",
+          commands: [
+            {
+              outputType: "text",
+              command:
+                "node -e \"console.log('stdout-line'); console.error('stderr-line'); process.exit(7)\"",
+              resultPath: "$STEP_PATH/output.txt"
+            }
+          ],
+          prompt: "Judge the outputs."
+        },
+        "step"
+      );
+    } catch (error) {
+      thrownError = error as Error;
+    }
+
+    expect(thrownError).toBeInstanceOf(Error);
+    expect(thrownError?.message).toContain(
+      "Rubric command failed for step with exit code 7."
+    );
+    expect(thrownError?.message).toContain("Command: node -e");
+    expect(thrownError?.message).toContain("stdout-line");
+    expect(thrownError?.message).toContain("stderr-line");
+  });
+
   it("collects mixed text and image evidence from one rubric", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "scorer-"));
     await fs.ensureDir(path.join(workspaceRoot, "step"));
