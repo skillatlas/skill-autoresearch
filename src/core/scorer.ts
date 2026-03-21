@@ -8,7 +8,7 @@ import path from "node:path";
 
 import { formatCommandFailure } from "./error-format.js";
 import { Logger } from "./logger.js";
-import { interpolateStepPath, loadRubric } from "./rubric.js";
+import { interpolateRubricVariables, loadRubric } from "./rubric.js";
 import {
   ActiveCandidate,
   CandidateComparison,
@@ -103,88 +103,6 @@ function serializeEvidenceForDebug(evidence: EvidenceItem[]) {
   );
 }
 
-function tokenizeShellCommand(command: string): string[] | undefined {
-  const tokens: string[] = [];
-  let current = "";
-  let quote: '"' | "'" | undefined;
-  let escaping = false;
-
-  for (const character of command) {
-    if (escaping) {
-      current += character;
-      escaping = false;
-      continue;
-    }
-
-    if (character === "\\") {
-      escaping = true;
-      continue;
-    }
-
-    if (quote) {
-      if (character === quote) {
-        quote = undefined;
-      } else {
-        current += character;
-      }
-      continue;
-    }
-
-    if (character === '"' || character === "'") {
-      quote = character;
-      continue;
-    }
-
-    if (/\s/.test(character)) {
-      if (current.length > 0) {
-        tokens.push(current);
-        current = "";
-      }
-      continue;
-    }
-
-    current += character;
-  }
-
-  if (escaping || quote) {
-    return undefined;
-  }
-
-  if (current.length > 0) {
-    tokens.push(current);
-  }
-
-  return tokens;
-}
-
-function parsePlaywrightHtmlScreenshotCommand(command: string):
-  | { inputPath: string; outputPath: string }
-  | undefined {
-  const tokens = tokenizeShellCommand(command);
-  if (!tokens || tokens.length !== 4) {
-    return undefined;
-  }
-
-  if (tokens[0] !== "playwright-cli") {
-    return undefined;
-  }
-
-  if (tokens[1] !== "screenshot" && tokens[1] !== "serve-and-screenshot") {
-    return undefined;
-  }
-
-  const inputPath = tokens[2];
-  const outputPath = tokens[3];
-  if (path.extname(inputPath).toLowerCase() !== ".html") {
-    return undefined;
-  }
-
-  return {
-    inputPath,
-    outputPath
-  };
-}
-
 function inferStaticContentType(filePath: string): string {
   switch (path.extname(filePath).toLowerCase()) {
     case ".html":
@@ -213,6 +131,16 @@ function inferStaticContentType(filePath: string): string {
 }
 
 async function startStaticFileServer(rootPath: string): Promise<{
+  origin: string;
+  close: () => Promise<void>;
+}> {
+  return startStaticFileServerOnPort(rootPath, 0);
+}
+
+async function startStaticFileServerOnPort(
+  rootPath: string,
+  port: number
+): Promise<{
   origin: string;
   close: () => Promise<void>;
 }> {
@@ -254,7 +182,7 @@ async function startStaticFileServer(rootPath: string): Promise<{
     port: number;
   }>((resolve, reject) => {
     server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
+    server.listen(port, "127.0.0.1", () => {
       const currentAddress = server.address();
       if (!currentAddress || typeof currentAddress === "string") {
         reject(new Error("Failed to determine screenshot server address."));
@@ -282,6 +210,12 @@ async function startStaticFileServer(rootPath: string): Promise<{
         });
       })
   };
+}
+
+interface EvidenceExecutionContext {
+  resolvedStepPath: string;
+  stepOrigin?: string;
+  close: () => Promise<void>;
 }
 
 export function summarizeVotes(
@@ -697,40 +631,48 @@ export class Scorer {
   ): Promise<EvidenceItem[]> {
     const resolvedStepPath = path.resolve(this.workspaceRoot, stepPath);
     const evidence: EvidenceItem[] = [];
+    const executionContext = await this.createExecutionContext(rubric, resolvedStepPath);
 
-    for (const [index, commandDefinition] of rubric.commands.entries()) {
-      if (commandDefinition.command) {
-        const command = interpolateStepPath(commandDefinition.command, resolvedStepPath);
-        if (this.verbose) {
-          this.logger.debug(`Executing rubric command: ${command}`);
+    try {
+      for (const [index, commandDefinition] of rubric.commands.entries()) {
+        if (commandDefinition.command) {
+          const command = interpolateRubricVariables(commandDefinition.command, {
+            stepPath: executionContext.resolvedStepPath,
+            stepOrigin: executionContext.stepOrigin
+          });
+          if (this.verbose) {
+            this.logger.debug(`Executing rubric command: ${command}`);
+          }
+          await this.executeRubricCommand(command, stepPath, executionContext);
         }
-        await this.executeRubricCommand(command, stepPath, resolvedStepPath);
-      }
 
-      const label = `evidence-${index + 1}`;
-      if (commandDefinition.outputType === "text") {
-        const textEvidence = await this.readTextEvidence(
-          commandDefinition.resultPath,
-          resolvedStepPath
+        const label = `evidence-${index + 1}`;
+        if (commandDefinition.outputType === "text") {
+          const textEvidence = await this.readTextEvidence(
+            commandDefinition.resultPath,
+            executionContext
+          );
+          evidence.push({
+            outputType: "text",
+            label,
+            content: textEvidence
+          });
+          continue;
+        }
+
+        evidence.push(
+          await this.readImageEvidence(commandDefinition.resultPath, executionContext, label)
         );
-        evidence.push({
-          outputType: "text",
-          label,
-          content: textEvidence
-        });
-        continue;
       }
 
-      evidence.push(
-        await this.readImageEvidence(commandDefinition.resultPath, resolvedStepPath, label)
-      );
-    }
+      if (evidence.length === 0) {
+        throw new Error(`No evidence collected for ${stepPath}.`);
+      }
 
-    if (evidence.length === 0) {
-      throw new Error(`No evidence collected for ${stepPath}.`);
+      return evidence;
+    } finally {
+      await executionContext.close();
     }
-
-    return evidence;
   }
 
   public async runVoteSeries(input: {
@@ -779,25 +721,16 @@ export class Scorer {
   private async executeRubricCommand(
     command: string,
     stepPath: string,
-    resolvedStepPath: string
+    executionContext: EvidenceExecutionContext
   ): Promise<void> {
-    const playwrightScreenshotCommand = parsePlaywrightHtmlScreenshotCommand(command);
-    if (playwrightScreenshotCommand) {
-      await this.captureHtmlScreenshot({
-        command,
-        stepPath,
-        stepRoot: resolvedStepPath,
-        inputPath: playwrightScreenshotCommand.inputPath,
-        outputPath: playwrightScreenshotCommand.outputPath
-      });
-      return;
-    }
-
     const result = await execaCommand(command, {
       cwd: this.workspaceRoot,
       env: {
         ...process.env,
-        STEP_PATH: resolvedStepPath
+        STEP_PATH: executionContext.resolvedStepPath,
+        ...(executionContext.stepOrigin
+          ? { STEP_ORIGIN: executionContext.stepOrigin }
+          : {})
       },
       all: true,
       reject: false,
@@ -821,84 +754,6 @@ export class Scorer {
     }
   }
 
-  private async captureHtmlScreenshot(input: {
-    command: string;
-    stepPath: string;
-    stepRoot: string;
-    inputPath: string;
-    outputPath: string;
-  }): Promise<void> {
-    const normalizedInputPath = path.resolve(input.inputPath);
-    const normalizedOutputPath = path.resolve(input.outputPath);
-    const relativeInputPath = path.relative(input.stepRoot, normalizedInputPath);
-    if (
-      relativeInputPath.startsWith("..") ||
-      path.isAbsolute(relativeInputPath)
-    ) {
-      throw new Error(
-        `Rubric command input must stay within ${input.stepRoot}: ${input.command}`
-      );
-    }
-
-    const sessionId = `skill-autoresearch-${process.pid}-${Date.now()}-${Math.random()
-      .toString(16)
-      .slice(2)}`;
-    const screenshotServer = await startStaticFileServer(input.stepRoot);
-    const pageUrl = new URL(
-      relativeInputPath.split(path.sep).join("/"),
-      `${screenshotServer.origin}/`
-    ).toString();
-    const logOutput: string[] = [];
-
-    try {
-      await fs.ensureDir(path.dirname(normalizedOutputPath));
-
-      for (const args of [
-        [`-s=${sessionId}`, "open", pageUrl],
-        [`-s=${sessionId}`, "resize", "1440", "1080"],
-        [`-s=${sessionId}`, "screenshot", "--filename", normalizedOutputPath]
-      ]) {
-        const result = await execa("playwright-cli", args, {
-          cwd: this.workspaceRoot,
-          all: true,
-          reject: false
-        });
-
-        if (this.verbose && result.all?.trim()) {
-          this.logger.debug(result.all);
-        }
-
-        if (result.all?.trim()) {
-          logOutput.push(result.all.trim());
-        }
-
-        if (result.exitCode !== 0) {
-          throw new Error(
-            formatCommandFailure({
-              label: "Rubric command",
-              subject: input.stepPath,
-              command: input.command,
-              exitCode: result.exitCode ?? 1,
-              output: logOutput.join("\n")
-            })
-          );
-        }
-      }
-    } finally {
-      try {
-        await execa("playwright-cli", [`-s=${sessionId}`, "close"], {
-          cwd: this.workspaceRoot,
-          all: true,
-          reject: false
-        });
-      } catch {
-        // Ignore close failures. The scoring command already captured the relevant error.
-      }
-
-      await screenshotServer.close();
-    }
-  }
-
   private getJudge(provider: ScoringProvider): VoteJudge {
     const judge = this.judges[provider];
     if (!judge) {
@@ -910,11 +765,14 @@ export class Scorer {
 
   private async readTextEvidence(
     resultPath: string,
-    resolvedStepPath: string
+    executionContext: EvidenceExecutionContext
   ): Promise<string> {
     const filePath = path.resolve(
       this.workspaceRoot,
-      interpolateStepPath(resultPath, resolvedStepPath)
+      interpolateRubricVariables(resultPath, {
+        stepPath: executionContext.resolvedStepPath,
+        stepOrigin: executionContext.stepOrigin
+      })
     );
     const content = (await fs.readFile(filePath, "utf8")).trim();
     if (content.length === 0) {
@@ -926,12 +784,15 @@ export class Scorer {
 
   private async readImageEvidence(
     resultPath: string,
-    resolvedStepPath: string,
+    executionContext: EvidenceExecutionContext,
     label: string
   ): Promise<EvidenceItem> {
     const imagePath = path.resolve(
       this.workspaceRoot,
-      interpolateStepPath(resultPath, resolvedStepPath)
+      interpolateRubricVariables(resultPath, {
+        stepPath: executionContext.resolvedStepPath,
+        stepOrigin: executionContext.stepOrigin
+      })
     );
     const bytes = await fs.readFile(imagePath);
     if (bytes.length === 0) {
@@ -946,6 +807,28 @@ export class Scorer {
       path: imagePath,
       mimeType,
       bytes
+    };
+  }
+
+  private async createExecutionContext(
+    rubric: NormalizedRubric,
+    resolvedStepPath: string
+  ): Promise<EvidenceExecutionContext> {
+    if (rubric.httpServerPort == null) {
+      return {
+        resolvedStepPath,
+        close: async () => undefined
+      };
+    }
+
+    const server = await startStaticFileServerOnPort(
+      resolvedStepPath,
+      rubric.httpServerPort
+    );
+    return {
+      resolvedStepPath,
+      stepOrigin: server.origin,
+      close: server.close
     };
   }
 }

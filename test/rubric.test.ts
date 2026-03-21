@@ -2,7 +2,11 @@ import fs from "fs-extra";
 import os from "node:os";
 import path from "node:path";
 
-import { interpolateStepPath, loadRubric } from "../src/core/rubric.js";
+import {
+  interpolateRubricVariables,
+  interpolateStepPath,
+  loadRubric
+} from "../src/core/rubric.js";
 
 describe("rubric parsing", () => {
   it("normalizes a single-command rubric", async () => {
@@ -25,6 +29,7 @@ Judge the outputs.`,
     const rubric = await loadRubric(rubricPath);
     expect(rubric.provider).toBe("openrouter");
     expect(rubric.modelId).toBe("openai/gpt-4.1");
+    expect(rubric.httpServerPort).toBeUndefined();
     expect(rubric.commands).toEqual([
       { outputType: "text", resultPath: "$STEP_PATH/index.html" }
     ]);
@@ -123,6 +128,54 @@ Judge the outputs.`,
     ]);
   });
 
+  it("normalizes `http_server: true` to an ephemeral port", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "rubric-"));
+    const rubricPath = path.join(tempDir, "RUBRIC.md");
+
+    await fs.writeFile(
+      rubricPath,
+      `---
+provider: openrouter
+model: openai/gpt-4.1
+http_server: true
+commands:
+  - outputType: image
+    command: playwright-cli open "$STEP_ORIGIN/index.html"
+    resultPath: "$STEP_PATH/index.png"
+---
+
+Judge the outputs.`,
+      "utf8"
+    );
+
+    const rubric = await loadRubric(rubricPath);
+    expect(rubric.httpServerPort).toBe(0);
+  });
+
+  it("preserves an explicit `http_server` port", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "rubric-"));
+    const rubricPath = path.join(tempDir, "RUBRIC.md");
+
+    await fs.writeFile(
+      rubricPath,
+      `---
+provider: openrouter
+model: openai/gpt-4.1
+http_server: 8080
+commands:
+  - outputType: image
+    command: playwright-cli open "$STEP_ORIGIN/index.html"
+    resultPath: "$STEP_PATH/index.png"
+---
+
+Judge the outputs.`,
+      "utf8"
+    );
+
+    const rubric = await loadRubric(rubricPath);
+    expect(rubric.httpServerPort).toBe(8080);
+  });
+
   it("requires an explicit scoring provider", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "rubric-"));
     const rubricPath = path.join(tempDir, "RUBRIC.md");
@@ -212,5 +265,14 @@ Judge the outputs.`,
     expect(interpolateStepPath('cat "$STEP_PATH/index.html"', "/tmp/step")).toBe(
       'cat "/tmp/step/index.html"'
     );
+  });
+
+  it("interpolates STEP_ORIGIN placeholders", () => {
+    expect(
+      interpolateRubricVariables('playwright-cli open "$STEP_ORIGIN/index.html"', {
+        stepPath: "/tmp/step",
+        stepOrigin: "http://127.0.0.1:4173"
+      })
+    ).toBe('playwright-cli open "http://127.0.0.1:4173/index.html"');
   });
 });

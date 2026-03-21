@@ -1,17 +1,18 @@
 ---
 provider: openrouter
 model: google/gemini-3-flash-preview
+http_server: true
 commands:
   - outputType: text
     resultPath: "$STEP_PATH/index.html"
   - outputType: image
-    command: playwright-cli screenshot "$STEP_PATH/index.html" "$STEP_PATH/index.png"
+    command: playwright-cli open "$STEP_ORIGIN/index.html" && playwright-cli resize 1440 1080 && playwright-cli screenshot --filename "$STEP_PATH/index.png" && playwright-cli close
     resultPath: "$STEP_PATH/index.png"
 ---
 
 You are a senior design critic and frontend engineer evaluating two candidate HTML pages. Each candidate is a self-contained `index.html` for a creative studio landing page. Score them on the dimensions below, then declare a winner.
 
-In rubric frontmatter, `resultPath` is the evidence file the scorer reads. `command` is optional preprocessing that creates or updates that file before scoring.
+In rubric frontmatter, `resultPath` is the evidence file the scorer reads. `command` is optional preprocessing that creates or updates that file before scoring. Set `http_server: true` to serve the step directory on an ephemeral localhost port and expose that URL as `$STEP_ORIGIN` for rubric commands.
 
 ## Evaluation dimensions
 

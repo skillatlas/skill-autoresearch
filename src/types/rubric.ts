@@ -2,6 +2,10 @@ import { z } from "zod";
 
 export const scoringProviderSchema = z.enum(["openrouter", "codex"]);
 export const evidenceOutputTypeSchema = z.enum(["text", "image"]);
+export const rubricHttpServerSchema = z.union([
+  z.boolean(),
+  z.number().int().min(1).max(65535)
+]);
 
 export const normalizedRubricCommandSchema = z.object({
   outputType: evidenceOutputTypeSchema,
@@ -16,6 +20,7 @@ export const normalizedRubricSchema = z.object({
   sourcePath: z.string(),
   provider: scoringProviderSchema,
   modelId: z.string().min(1),
+  httpServerPort: z.number().int().min(0).max(65535).optional(),
   commands: z.array(normalizedRubricCommandSchema).min(1),
   prompt: z.string().min(1)
 });

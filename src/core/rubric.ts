@@ -5,7 +5,8 @@ import { z } from "zod";
 import {
   NormalizedRubric,
   normalizedRubricSchema,
-  evidenceOutputTypeSchema
+  evidenceOutputTypeSchema,
+  rubricHttpServerSchema
 } from "../types/rubric.js";
 
 const rawRubricCommandSchema = z.object({
@@ -18,6 +19,7 @@ const rawRubricFrontmatterSchema = z
   .object({
     provider: z.enum(["openrouter", "codex"]),
     model: z.string().min(1),
+    http_server: rubricHttpServerSchema.optional(),
     outputType: evidenceOutputTypeSchema.optional(),
     command: z.string().min(1).optional(),
     resultPath: z.string().min(1).optional(),
@@ -70,7 +72,22 @@ export function interpolateStepPath(
   template: string,
   stepPath: string
 ): string {
-  return template.replaceAll("$STEP_PATH", stepPath);
+  return interpolateRubricVariables(template, { stepPath });
+}
+
+export function interpolateRubricVariables(
+  template: string,
+  input: {
+    stepPath: string;
+    stepOrigin?: string;
+  }
+): string {
+  let output = template.replaceAll("$STEP_PATH", input.stepPath);
+  if (input.stepOrigin) {
+    output = output.replaceAll("$STEP_ORIGIN", input.stepOrigin);
+  }
+
+  return output;
 }
 
 export async function loadRubric(rubricPath: string): Promise<NormalizedRubric> {
@@ -105,6 +122,12 @@ export async function loadRubric(rubricPath: string): Promise<NormalizedRubric> 
     sourcePath: rubricPath,
     provider: frontmatter.provider,
     modelId: frontmatter.model,
+    httpServerPort:
+      frontmatter.http_server === true
+        ? 0
+        : typeof frontmatter.http_server === "number"
+          ? frontmatter.http_server
+          : undefined,
     commands,
     prompt
   });
