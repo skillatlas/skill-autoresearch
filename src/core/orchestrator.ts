@@ -100,15 +100,15 @@ export class Orchestrator {
     }
 
     let state: RunState | undefined;
-    let humanRunStarted = false;
+    let monitorStarted = false;
 
     try {
       state = await this.initializeState();
 
-      if (this.options.scoringMode === "human" && state.status !== "completed") {
+      if (state.status !== "completed") {
         await this.humanReview.startRun(state);
         this.humanReview.syncState(state);
-        humanRunStarted = true;
+        monitorStarted = true;
       }
 
       if (state.status === "completed") {
@@ -157,7 +157,7 @@ export class Orchestrator {
 
       throw error;
     } finally {
-      if (humanRunStarted) {
+      if (monitorStarted) {
         await this.humanReview.close();
       }
     }
@@ -548,9 +548,7 @@ export class Orchestrator {
     );
     this.pendingStateSave = saveOperation.catch(() => undefined);
     await saveOperation;
-    if (this.options.scoringMode === "human") {
-      this.humanReview.syncState(snapshot);
-    }
+    this.humanReview.syncState(snapshot);
   }
 
   private recordCandidateVote(

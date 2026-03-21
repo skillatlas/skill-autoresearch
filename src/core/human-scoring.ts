@@ -5,8 +5,9 @@ import path from "node:path";
 import { URL } from "node:url";
 
 import { Logger } from "./logger.js";
+import { selectBestWinningCandidate } from "./scorer.js";
 import { ScoreVote } from "../types/rubric.js";
-import { RunState } from "../types/state.js";
+import { ActiveCandidate, RunState } from "../types/state.js";
 
 export interface HumanReviewCandidate {
   index: number;
@@ -95,6 +96,32 @@ interface SessionSkillDiffState {
     original: SessionSkillDiff | null;
     previous: SessionSkillDiff | null;
   };
+}
+
+interface SessionCurrentComparison {
+  candidateIndex: number;
+  candidateLabel: string;
+  attempt: number | null;
+  comparisonNumber: number | null;
+  incumbentPath: string;
+  candidatePath: string;
+  incumbentUrl: string;
+  candidateUrl: string;
+  votingEnabled: boolean;
+  statusLabel: string;
+}
+
+interface SessionCurrentSnapshot {
+  comparison: SessionCurrentComparison;
+  artifacts: Map<string, ArtifactRef>;
+}
+
+interface RubricComparisonSnapshot {
+  stepIndex: number;
+  candidateIndex: number;
+  incumbentPath: string;
+  candidatePath: string;
+  accepted: boolean;
 }
 
 const PREVIEW_VIEWPORTS = [480, 960] as const;
@@ -427,6 +454,7 @@ export class LocalHumanReviewService implements HumanReviewService {
   private baseUrl?: string;
   private latestState?: RunState;
   private activeReview?: ReviewSession;
+  private latestRubricComparison?: RubricComparisonSnapshot;
   private readonly eventClients = new Set<ServerResponse>();
 
   public constructor(
@@ -436,6 +464,7 @@ export class LocalHumanReviewService implements HumanReviewService {
 
   public async startRun(state: RunState): Promise<void> {
     this.latestState = structuredClone(state);
+    this.captureRubricComparison(this.latestState);
     if (this.server) {
       this.broadcastSession();
       return;
@@ -479,11 +508,11 @@ export class LocalHumanReviewService implements HumanReviewService {
         }
 
         this.baseUrl = `http://127.0.0.1:${address.port}`;
-        this.logger.phase(`Human scoring ready at ${this.baseUrl}`);
+        this.logger.phase(`Web interface ready at ${this.baseUrl}`);
         void this.browserOpener
           .open(this.baseUrl)
           .then(() => {
-            this.logger.info(`Opened human scoring in the default browser: ${this.baseUrl}`);
+            this.logger.info(`Opened the web interface in the default browser: ${this.baseUrl}`);
             this.broadcastSession();
             finish();
           })
@@ -496,6 +525,7 @@ export class LocalHumanReviewService implements HumanReviewService {
 
   public syncState(state: RunState): void {
     this.latestState = structuredClone(state);
+    this.captureRubricComparison(this.latestState);
     this.broadcastSession();
   }
 
@@ -587,11 +617,12 @@ export class LocalHumanReviewService implements HumanReviewService {
     const summary = this.describeSummary(mode);
     const progress = this.buildProgress(mode);
     const candidates = this.buildCandidates();
-    const currentReview = this.buildCurrentReview();
+    const currentSnapshot = this.buildCurrentSnapshot();
 
     return {
       mode,
       runId: this.latestState?.runId ?? null,
+      scoringMode: this.latestState?.scoringMode ?? null,
       stepIndex: this.latestState?.stepIndex ?? 0,
       phaseLabel,
       summary,
@@ -599,7 +630,7 @@ export class LocalHumanReviewService implements HumanReviewService {
         this.activeReview?.input.voteCount ?? this.latestState?.voteCount ?? 0,
       completedUnits: progress.completed,
       totalUnits: progress.total,
-      current: currentReview,
+      current: currentSnapshot?.comparison ?? null,
       candidates,
       skillDiff: this.buildSkillDiff()
     };
@@ -851,7 +882,11 @@ export class LocalHumanReviewService implements HumanReviewService {
     }));
   }
 
-  private buildCurrentReview() {
+  private buildCurrentSnapshot(): SessionCurrentSnapshot | null {
+    return this.buildActiveReviewSnapshot() ?? this.buildRubricSnapshot();
+  }
+
+  private buildActiveReviewSnapshot(): SessionCurrentSnapshot | null {
     if (!this.activeReview || !this.baseUrl) {
       return null;
     }
@@ -866,15 +901,172 @@ export class LocalHumanReviewService implements HumanReviewService {
       return null;
     }
 
+    const incumbentArtifactId = "incumbent";
+    const candidateArtifactId = `candidate-${current.candidateIndex}`;
+
     return {
-      candidateIndex: current.candidateIndex,
-      attempt: current.attempt,
-      comparisonNumber: this.activeReview.activeIndex + 1,
-      incumbentPath: this.activeReview.input.incumbentPath,
-      candidatePath: candidate.path,
-      incumbentUrl: `${this.baseUrl}/artifact/incumbent/`,
-      candidateUrl: `${this.baseUrl}/artifact/candidate-${current.candidateIndex}/`
+      comparison: {
+        candidateIndex: current.candidateIndex,
+        candidateLabel: `Candidate ${current.candidateIndex}`,
+        attempt: current.attempt,
+        comparisonNumber: this.activeReview.activeIndex + 1,
+        incumbentPath: this.activeReview.input.incumbentPath,
+        candidatePath: candidate.path,
+        incumbentUrl: `${this.baseUrl}/artifact/${incumbentArtifactId}/`,
+        candidateUrl: `${this.baseUrl}/artifact/${candidateArtifactId}/`,
+        votingEnabled: true,
+        statusLabel: "Which version looks better?"
+      },
+      artifacts: new Map<string, ArtifactRef>([
+        [incumbentArtifactId, { label: "Incumbent", path: this.activeReview.input.incumbentPath }],
+        [
+          candidateArtifactId,
+          {
+            label: `Candidate ${current.candidateIndex}`,
+            path: candidate.path
+          }
+        ]
+      ])
     };
+  }
+
+  private buildRubricSnapshot(): SessionCurrentSnapshot | null {
+    if (!this.baseUrl || this.latestState?.scoringMode !== "rubric") {
+      return null;
+    }
+
+    const comparison =
+      this.latestRubricComparison ?? this.deriveRubricComparisonFromHistory(this.latestState);
+    if (!comparison) {
+      return null;
+    }
+
+    const incumbentArtifactId = "incumbent";
+    const candidateArtifactId = `candidate-${comparison.candidateIndex}`;
+
+    return {
+      comparison: {
+        candidateIndex: comparison.candidateIndex,
+        candidateLabel: `Candidate ${comparison.candidateIndex}`,
+        attempt: null,
+        comparisonNumber: null,
+        incumbentPath: comparison.incumbentPath,
+        candidatePath: comparison.candidatePath,
+        incumbentUrl: `${this.baseUrl}/artifact/${incumbentArtifactId}/`,
+        candidateUrl: `${this.baseUrl}/artifact/${candidateArtifactId}/`,
+        votingEnabled: false,
+        statusLabel: comparison.accepted
+          ? `Latest completed rubric step kept candidate ${comparison.candidateIndex}.`
+          : `Latest completed rubric step kept the incumbent over candidate ${comparison.candidateIndex}.`
+      },
+      artifacts: new Map<string, ArtifactRef>([
+        [incumbentArtifactId, { label: "Incumbent", path: comparison.incumbentPath }],
+        [
+          candidateArtifactId,
+          {
+            label: `Candidate ${comparison.candidateIndex}`,
+            path: comparison.candidatePath
+          }
+        ]
+      ])
+    };
+  }
+
+  private captureRubricComparison(state: RunState): void {
+    if (state.scoringMode !== "rubric") {
+      return;
+    }
+
+    const currentStepComparison = this.deriveRubricComparisonFromState(state);
+    if (currentStepComparison) {
+      this.latestRubricComparison = currentStepComparison;
+      return;
+    }
+
+    if (!this.latestRubricComparison) {
+      this.latestRubricComparison = this.deriveRubricComparisonFromHistory(state);
+    }
+  }
+
+  private deriveRubricComparisonFromState(
+    state: RunState
+  ): RubricComparisonSnapshot | undefined {
+    if (
+      state.currentPhase !== "promote" ||
+      !state.incumbentPath ||
+      state.activeCandidates.length === 0
+    ) {
+      return undefined;
+    }
+
+    const selectedCandidate = this.selectDisplayCandidate(state.activeCandidates);
+    if (!selectedCandidate) {
+      return undefined;
+    }
+
+    const acceptedCandidateCount = state.activeCandidates.filter(
+      (candidate) => candidate.comparison?.isWinner
+    ).length;
+
+    return {
+      stepIndex: state.stepIndex,
+      candidateIndex: selectedCandidate.index,
+      incumbentPath: path.resolve(state.workspaceRoot, state.incumbentPath),
+      candidatePath: path.resolve(state.workspaceRoot, selectedCandidate.path),
+      accepted: acceptedCandidateCount > state.activeCandidates.length / 2
+    };
+  }
+
+  private deriveRubricComparisonFromHistory(
+    state: RunState
+  ): RubricComparisonSnapshot | undefined {
+    const latestEntry = state.history[state.history.length - 1];
+    if (
+      !latestEntry?.accepted ||
+      latestEntry.promotedCandidateIndex == null ||
+      !latestEntry.promotedCandidatePath
+    ) {
+      return undefined;
+    }
+
+    const previousEntry = state.history[state.history.length - 2];
+    const previousIncumbentPath =
+      previousEntry?.incumbentPath ??
+      path.join("steps", "0", "baseline");
+
+    return {
+      stepIndex: latestEntry.stepIndex,
+      candidateIndex: latestEntry.promotedCandidateIndex,
+      incumbentPath: path.resolve(state.workspaceRoot, previousIncumbentPath),
+      candidatePath: path.resolve(state.workspaceRoot, latestEntry.promotedCandidatePath),
+      accepted: true
+    };
+  }
+
+  private selectDisplayCandidate(
+    candidates: ReadonlyArray<ActiveCandidate>
+  ): ActiveCandidate | undefined {
+    const winningCandidate = selectBestWinningCandidate(candidates);
+    if (winningCandidate) {
+      return winningCandidate;
+    }
+
+    return [...candidates]
+      .filter((candidate) => candidate.comparison)
+      .sort((left, right) => {
+        const leftComparison = left.comparison!;
+        const rightComparison = right.comparison!;
+
+        if (leftComparison.bVotes !== rightComparison.bVotes) {
+          return rightComparison.bVotes - leftComparison.bVotes;
+        }
+
+        if (leftComparison.averageConfidence !== rightComparison.averageConfidence) {
+          return rightComparison.averageConfidence - leftComparison.averageConfidence;
+        }
+
+        return left.index - right.index;
+      })[0];
   }
 
   private logPendingComparison(): void {
@@ -1046,7 +1238,7 @@ export class LocalHumanReviewService implements HumanReviewService {
     artifactId: string,
     rawArtifactPath: string
   ): Promise<void> {
-    const artifacts = this.activeReview?.artifacts;
+    const artifacts = this.buildCurrentSnapshot()?.artifacts;
     const artifact = artifacts?.get(artifactId);
     if (!artifact) {
       sendHtml(response, 404, "<h1>Artifact not found.</h1>");
@@ -1146,7 +1338,7 @@ export class LocalHumanReviewService implements HumanReviewService {
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Human scoring</title>
+    <title>Skill autoresearch monitor</title>
     <style>
       :root {
         color-scheme: light;
@@ -1416,6 +1608,10 @@ export class LocalHumanReviewService implements HumanReviewService {
         padding: 12px 18px;
         text-decoration: none;
         transition: transform 140ms ease, background-color 140ms ease;
+      }
+
+      [hidden] {
+        display: none !important;
       }
 
       button[data-variant="secondary"],
@@ -1730,9 +1926,9 @@ export class LocalHumanReviewService implements HumanReviewService {
     <main class="shell">
       <section class="header">
         <div class="masthead">
-          <p class="eyebrow">Human scoring</p>
-          <h1>Pick the stronger artifact.</h1>
-          <p class="subhead">Compare two versions of an artifact side by side and vote for the one that looks better. Progress updates automatically.</p>
+          <p class="eyebrow">Skill autoresearch</p>
+          <h1>Track the current artifact pair.</h1>
+          <p class="subhead">The monitor keeps the latest comparison in view, and switches into side-by-side voting when human scoring is active. Progress updates automatically.</p>
         </div>
         <aside class="queue">
           <p class="eyebrow">Progress</p>
@@ -1838,6 +2034,8 @@ export class LocalHumanReviewService implements HumanReviewService {
       const candidateFrame = document.getElementById("candidate-frame");
       const openIncumbent = document.getElementById("open-incumbent");
       const openCandidate = document.getElementById("open-candidate");
+      const voteIncumbent = document.getElementById("vote-incumbent");
+      const voteCandidate = document.getElementById("vote-candidate");
       const skillDiffSection = document.getElementById("skill-diff-section");
       const skillDiffToggle = document.getElementById("skill-diff-toggle");
       const skillDiffSummary = document.getElementById("skill-diff-summary");
@@ -1942,12 +2140,16 @@ export class LocalHumanReviewService implements HumanReviewService {
         }
       }
 
+      function setOpenLinksEnabled(enabled) {
+        openIncumbent.setAttribute("aria-disabled", enabled ? "false" : "true");
+        openCandidate.setAttribute("aria-disabled", enabled ? "false" : "true");
+      }
+
       function setVotingEnabled(enabled) {
         for (const button of voteButtons) {
           button.disabled = !enabled;
+          button.hidden = !enabled;
         }
-        openIncumbent.setAttribute("aria-disabled", enabled ? "false" : "true");
-        openCandidate.setAttribute("aria-disabled", enabled ? "false" : "true");
       }
 
       function resetPreviewFrame(preview) {
@@ -1982,6 +2184,7 @@ export class LocalHumanReviewService implements HumanReviewService {
         clearPreviewFrame(previewFrames[1]);
         openIncumbent.href = "#";
         openCandidate.href = "#";
+        setOpenLinksEnabled(false);
       }
 
       function pluralize(count, singular, plural) {
@@ -2209,14 +2412,14 @@ export class LocalHumanReviewService implements HumanReviewService {
         promptMeta.textContent = session.summary;
         renderSkillDiff(session.skillDiff);
 
-        if (session.mode !== "review" || !session.current) {
+        if (!session.current) {
           setPreviewVisibility(false);
           clearFrames();
           setVotingEnabled(false);
           return;
         }
 
-        candidateLabel.textContent = "Candidate " + session.current.candidateIndex;
+        candidateLabel.textContent = session.current.candidateLabel;
         incumbentPath.textContent = session.current.incumbentPath;
         candidatePath.textContent = session.current.candidatePath;
         resetPreviewFrame(previewFrames[0]);
@@ -2226,9 +2429,10 @@ export class LocalHumanReviewService implements HumanReviewService {
         candidateFrame.src = session.current.candidateUrl;
         openIncumbent.href = session.current.incumbentUrl;
         openCandidate.href = session.current.candidateUrl;
-        setVotingEnabled(true);
+        setOpenLinksEnabled(true);
+        setVotingEnabled(session.current.votingEnabled);
         status.hidden = false;
-        status.textContent = "Which version looks better?";
+        status.textContent = session.current.statusLabel;
       }
 
       async function loadInitialSession() {
@@ -2241,7 +2445,12 @@ export class LocalHumanReviewService implements HumanReviewService {
       }
 
       async function submitVote(winner) {
-        if (!currentSession || currentSession.mode !== "review" || !currentSession.current) {
+        if (
+          !currentSession ||
+          currentSession.mode !== "review" ||
+          !currentSession.current ||
+          !currentSession.current.votingEnabled
+        ) {
           return;
         }
 

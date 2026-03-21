@@ -352,4 +352,178 @@ describe("LocalHumanReviewService", () => {
 
     await service.close();
   });
+
+  it("keeps the latest rubric comparison visible after scoring completes", async () => {
+    const workspaceRoot = await fs.mkdtemp(
+      path.join(os.tmpdir(), "skill-autoresearch-human-scoring-")
+    );
+    const baselinePath = path.join(workspaceRoot, "steps", "0", "baseline");
+    const candidatePath = path.join(workspaceRoot, "steps", "1", "candidates", "0");
+    const originalSkillsPath = path.join(workspaceRoot, "skills-original");
+    const previousSkillsPath = path.join(workspaceRoot, "skills-previous");
+    const currentSkillsPath = path.join(workspaceRoot, "skills");
+    await fs.ensureDir(baselinePath);
+    await fs.ensureDir(candidatePath);
+    await fs.ensureDir(originalSkillsPath);
+    await fs.ensureDir(previousSkillsPath);
+    await fs.ensureDir(currentSkillsPath);
+    await fs.writeFile(
+      path.join(baselinePath, "index.html"),
+      "<!doctype html><html><body><main>Baseline</main></body></html>",
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(candidatePath, "index.html"),
+      "<!doctype html><html><body><main>Candidate</main></body></html>",
+      "utf8"
+    );
+
+    let openedUrlResolve: ((url: string) => void) | undefined;
+    const openedUrl = new Promise<string>((resolve) => {
+      openedUrlResolve = resolve;
+    });
+    const service = new LocalHumanReviewService(new Logger(false), {
+      async open(url: string): Promise<void> {
+        openedUrlResolve?.(url);
+      }
+    });
+
+    await service.startRun({
+      version: 1,
+      runId: "run-rubric",
+      workspaceRoot,
+      scoringMode: "rubric",
+      status: "running",
+      stepIndex: 1,
+      candidateCount: 1,
+      voteCount: 3,
+      minSteps: 0,
+      maxSteps: 1,
+      consecutiveRejections: 0,
+      archivePath: "archive/run-rubric",
+      skillsOriginalPath: "skills-original",
+      skillsPreviousPath: "skills-previous",
+      incumbentPath: path.relative(workspaceRoot, baselinePath),
+      currentPhase: "generate-candidates",
+      activeCandidates: [],
+      history: []
+    });
+
+    service.syncState({
+      version: 1,
+      runId: "run-rubric",
+      workspaceRoot,
+      scoringMode: "rubric",
+      status: "running",
+      stepIndex: 1,
+      candidateCount: 1,
+      voteCount: 3,
+      minSteps: 0,
+      maxSteps: 1,
+      consecutiveRejections: 0,
+      archivePath: "archive/run-rubric",
+      skillsOriginalPath: "skills-original",
+      skillsPreviousPath: "skills-previous",
+      incumbentPath: path.relative(workspaceRoot, baselinePath),
+      currentPhase: "promote",
+      activeCandidates: [
+        {
+          index: 0,
+          path: path.relative(workspaceRoot, candidatePath),
+          status: "scored",
+          votes: [
+            {
+              attempt: 0,
+              winner: "B",
+              confidence: 1,
+              rationale: "Better"
+            },
+            {
+              attempt: 1,
+              winner: "B",
+              confidence: 1,
+              rationale: "Still better"
+            },
+            {
+              attempt: 2,
+              winner: "A",
+              confidence: 1,
+              rationale: "Closer"
+            }
+          ],
+          comparison: {
+            aVotes: 1,
+            bVotes: 2,
+            averageConfidence: 1,
+            isWinner: true
+          }
+        }
+      ],
+      history: []
+    });
+
+    service.syncState({
+      version: 1,
+      runId: "run-rubric",
+      workspaceRoot,
+      scoringMode: "rubric",
+      status: "running",
+      stepIndex: 2,
+      candidateCount: 1,
+      voteCount: 3,
+      minSteps: 0,
+      maxSteps: 1,
+      consecutiveRejections: 0,
+      archivePath: "archive/run-rubric",
+      skillsOriginalPath: "skills-original",
+      skillsPreviousPath: "skills-previous",
+      incumbentPath: path.relative(workspaceRoot, candidatePath),
+      currentPhase: "snapshot",
+      activeCandidates: [],
+      history: [
+        {
+          timestamp: new Date().toISOString(),
+          stepIndex: 1,
+          accepted: true,
+          incumbentPath: path.relative(workspaceRoot, candidatePath),
+          promotedCandidateIndex: 0,
+          promotedCandidatePath: path.relative(workspaceRoot, candidatePath),
+          winningCandidateIndexes: [0],
+          consecutiveRejections: 0
+        }
+      ]
+    });
+
+    const baseUrl = await openedUrl;
+    const sessionResponse = await fetch(`${baseUrl}/api/session`);
+    const session = (await sessionResponse.json()) as {
+      mode: string;
+      scoringMode: string;
+      current: {
+        candidateIndex: number;
+        incumbentPath: string;
+        candidatePath: string;
+        votingEnabled: boolean;
+        statusLabel: string;
+        incumbentUrl: string;
+      };
+    };
+
+    expect(session.mode).toBe("running");
+    expect(session.scoringMode).toBe("rubric");
+    expect(session.current).toMatchObject({
+      candidateIndex: 0,
+      incumbentPath: path.resolve(baselinePath),
+      candidatePath: path.resolve(candidatePath),
+      votingEnabled: false
+    });
+    expect(session.current.statusLabel).toContain("kept candidate 0");
+
+    const artifactResponse = await fetch(session.current.incumbentUrl);
+    const artifactHtml = await artifactResponse.text();
+    expect(artifactResponse.ok).toBe(true);
+    expect(artifactHtml).toContain("Baseline");
+
+    await service.close();
+  });
 });
