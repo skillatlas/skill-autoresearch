@@ -916,6 +916,15 @@ export class LocalHumanReviewService implements HumanReviewService {
         list-style: none;
       }
 
+      .queue-step {
+        margin-top: 12px;
+        color: var(--accent-strong);
+        font-family: "Courier New", monospace;
+        font-size: 13px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
       .queue-list li + li {
         margin-top: 10px;
       }
@@ -1152,6 +1161,7 @@ export class LocalHumanReviewService implements HumanReviewService {
         </div>
         <aside class="queue">
           <p class="eyebrow">Progress</p>
+          <div class="queue-step" id="queue-step">Current step · Loading\u2026</div>
           <div id="queue-summary">Connecting…</div>
           <div class="progress-track" aria-hidden="true">
             <div class="progress-fill" id="progress-fill"></div>
@@ -1219,6 +1229,7 @@ export class LocalHumanReviewService implements HumanReviewService {
     </main>
 
     <script>
+      const queueStep = document.getElementById("queue-step");
       const queueSummary = document.getElementById("queue-summary");
       const queueList = document.getElementById("queue-list");
       const progressFill = document.getElementById("progress-fill");
@@ -1370,6 +1381,7 @@ export class LocalHumanReviewService implements HumanReviewService {
         currentSession = session;
         const ratio = session.totalUnits === 0 ? 0 : session.completedUnits / session.totalUnits;
         progressFill.style.width = (ratio * 100).toFixed(1) + "%";
+        queueStep.textContent = "Current step · " + session.phaseLabel;
         queueSummary.textContent = session.summary;
 
         queueList.innerHTML = "";
