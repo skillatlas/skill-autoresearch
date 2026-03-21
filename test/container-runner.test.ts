@@ -1,4 +1,5 @@
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import { vi } from "vitest";
 
 import {
@@ -252,5 +253,53 @@ describe("container runner", () => {
     expect(error?.message).toContain("Output:\nagent crashed");
     expect(error?.message).toContain("[prompt omitted]");
     expect(error?.message).not.toContain("very sensitive prompt body");
+  });
+
+  it("prefixes streamed debug generation output with the target path", async () => {
+    const all = new PassThrough();
+    const result = Promise.resolve({
+      exitCode: 0,
+      all: '{"type":"message"}\n{"type":"result"}'
+    });
+    const subprocess = Object.assign(result, { all });
+    execaMock.mockReturnValue(subprocess);
+
+    const originalDebugGeneration = process.env.DEBUG_GENERATION;
+    process.env.DEBUG_GENERATION = "1";
+
+    const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      const runner = new CodeContainerRunner("/tmp/workspace", new Logger(false), false);
+      const runPromise = runner.runPrompt({
+        containerRoot: "/tmp/workspace",
+        targetPath: "/tmp/workspace/steps/1/candidates/0",
+        prompt: "Generate",
+        label: "Candidate 0 generation for step 1",
+        harness: "claude"
+      });
+
+      all.write('{"type":"message"}\n{"type":"result"}');
+      all.end();
+
+      await runPromise;
+
+      expect(consoleLogSpy).toHaveBeenCalledWith(
+        "[phase] Candidate 0 generation for step 1"
+      );
+      expect(consoleLogSpy).toHaveBeenCalledWith(
+        'steps/1/candidates/0 {"type":"message"}'
+      );
+      expect(consoleLogSpy).toHaveBeenCalledWith(
+        'steps/1/candidates/0 {"type":"result"}'
+      );
+    } finally {
+      if (originalDebugGeneration === undefined) {
+        delete process.env.DEBUG_GENERATION;
+      } else {
+        process.env.DEBUG_GENERATION = originalDebugGeneration;
+      }
+      consoleLogSpy.mockRestore();
+    }
   });
 });
