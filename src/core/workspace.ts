@@ -178,9 +178,10 @@ export class WorkspaceManager {
 
   public async assertDirectoryContainsFiles(
     targetPath: string,
-    label: string
+    label: string,
+    options?: { ignoredTopLevelEntries?: string[] }
   ): Promise<void> {
-    if (await this.directoryContainsFiles(targetPath)) {
+    if (await this.directoryContainsFiles(targetPath, options)) {
       return;
     }
 
@@ -211,7 +212,6 @@ export class WorkspaceManager {
   }
 
   private async cleanupSandboxRoot(rootPath: string): Promise<void> {
-    await fs.remove(path.join(rootPath, "skills"));
     await fs.remove(path.join(rootPath, ".claude"));
     await fs.remove(path.join(rootPath, ".agents"));
   }
@@ -285,20 +285,31 @@ export class WorkspaceManager {
     }
   }
 
-  private async directoryContainsFiles(targetPath: string): Promise<boolean> {
+  private async directoryContainsFiles(
+    targetPath: string,
+    options?: { ignoredTopLevelEntries?: string[] },
+    depth = 0
+  ): Promise<boolean> {
     if (!(await fs.pathExists(targetPath))) {
       return false;
     }
 
     const entries = await fs.readdir(targetPath);
     for (const entry of entries) {
+      if (depth === 0 && options?.ignoredTopLevelEntries?.includes(entry)) {
+        continue;
+      }
+
       const entryPath = path.join(targetPath, entry);
       const stats = await fs.stat(entryPath);
       if (stats.isFile()) {
         return true;
       }
 
-      if (stats.isDirectory() && (await this.directoryContainsFiles(entryPath))) {
+      if (
+        stats.isDirectory() &&
+        (await this.directoryContainsFiles(entryPath, options, depth + 1))
+      ) {
         return true;
       }
     }

@@ -206,7 +206,9 @@ export class Orchestrator {
     } finally {
       await sandbox.cleanup();
     }
-    await this.workspace.assertDirectoryContainsFiles(baselineDir, "Baseline generation");
+    await this.workspace.assertDirectoryContainsFiles(baselineDir, "Baseline generation", {
+      ignoredTopLevelEntries: ["skills"]
+    });
 
     await this.workspace.snapshotSkills("original");
     state.incumbentPath = this.workspace.relativeToRoot(baselineDir);
@@ -293,7 +295,10 @@ export class Orchestrator {
       }
       await this.workspace.assertDirectoryContainsFiles(
         candidateDir,
-        `Candidate generation for step ${state.stepIndex}/${candidate.index}`
+        `Candidate generation for step ${state.stepIndex}/${candidate.index}`,
+        {
+          ignoredTopLevelEntries: ["skills"]
+        }
       );
       candidate.status = "generated";
       await this.saveState(state);
