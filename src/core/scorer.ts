@@ -3,6 +3,7 @@ import { generateObject } from "ai";
 import { openrouter } from "@openrouter/ai-sdk-provider";
 import dotenv from "dotenv";
 import { execa, execaCommand } from "execa";
+import { createServer } from "node:http";
 import path from "node:path";
 
 import { formatCommandFailure } from "./error-format.js";
@@ -100,6 +101,187 @@ function serializeEvidenceForDebug(evidence: EvidenceItem[]) {
           byteLength: item.bytes.length
         }
   );
+}
+
+function tokenizeShellCommand(command: string): string[] | undefined {
+  const tokens: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | undefined;
+  let escaping = false;
+
+  for (const character of command) {
+    if (escaping) {
+      current += character;
+      escaping = false;
+      continue;
+    }
+
+    if (character === "\\") {
+      escaping = true;
+      continue;
+    }
+
+    if (quote) {
+      if (character === quote) {
+        quote = undefined;
+      } else {
+        current += character;
+      }
+      continue;
+    }
+
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+
+    if (/\s/.test(character)) {
+      if (current.length > 0) {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+
+    current += character;
+  }
+
+  if (escaping || quote) {
+    return undefined;
+  }
+
+  if (current.length > 0) {
+    tokens.push(current);
+  }
+
+  return tokens;
+}
+
+function parsePlaywrightHtmlScreenshotCommand(command: string):
+  | { inputPath: string; outputPath: string }
+  | undefined {
+  const tokens = tokenizeShellCommand(command);
+  if (!tokens || tokens.length !== 4) {
+    return undefined;
+  }
+
+  if (tokens[0] !== "playwright-cli") {
+    return undefined;
+  }
+
+  if (tokens[1] !== "screenshot" && tokens[1] !== "serve-and-screenshot") {
+    return undefined;
+  }
+
+  const inputPath = tokens[2];
+  const outputPath = tokens[3];
+  if (path.extname(inputPath).toLowerCase() !== ".html") {
+    return undefined;
+  }
+
+  return {
+    inputPath,
+    outputPath
+  };
+}
+
+function inferStaticContentType(filePath: string): string {
+  switch (path.extname(filePath).toLowerCase()) {
+    case ".html":
+      return "text/html; charset=utf-8";
+    case ".css":
+      return "text/css; charset=utf-8";
+    case ".js":
+    case ".mjs":
+      return "application/javascript; charset=utf-8";
+    case ".json":
+      return "application/json; charset=utf-8";
+    case ".svg":
+      return "image/svg+xml";
+    case ".png":
+      return "image/png";
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".webp":
+      return "image/webp";
+    case ".gif":
+      return "image/gif";
+    default:
+      return "application/octet-stream";
+  }
+}
+
+async function startStaticFileServer(rootPath: string): Promise<{
+  origin: string;
+  close: () => Promise<void>;
+}> {
+  const normalizedRootPath = path.resolve(rootPath);
+  const normalizedRootPrefix = `${normalizedRootPath}${path.sep}`;
+  const server = createServer(async (request, response) => {
+    const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+    const rawRelativePath =
+      requestUrl.pathname === "/" ? "index.html" : requestUrl.pathname.slice(1);
+    const relativePath = path.normalize(decodeURIComponent(rawRelativePath));
+    const targetPath = path.resolve(normalizedRootPath, relativePath);
+
+    if (
+      targetPath !== normalizedRootPath &&
+      !targetPath.startsWith(normalizedRootPrefix)
+    ) {
+      response.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
+      response.end("Forbidden");
+      return;
+    }
+
+    try {
+      const stats = await fs.stat(targetPath);
+      const filePath = stats.isDirectory() ? path.join(targetPath, "index.html") : targetPath;
+      const bytes = await fs.readFile(filePath);
+      response.writeHead(200, {
+        "Cache-Control": "no-store",
+        "Content-Type": inferStaticContentType(filePath)
+      });
+      response.end(bytes);
+    } catch {
+      response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+      response.end("Not found");
+    }
+  });
+
+  const address = await new Promise<{
+    address: string;
+    port: number;
+  }>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const currentAddress = server.address();
+      if (!currentAddress || typeof currentAddress === "string") {
+        reject(new Error("Failed to determine screenshot server address."));
+        return;
+      }
+
+      resolve({
+        address: currentAddress.address,
+        port: currentAddress.port
+      });
+    });
+  });
+
+  return {
+    origin: `http://${address.address}:${address.port}`,
+    close: () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+
+          resolve();
+        });
+      })
+  };
 }
 
 export function summarizeVotes(
@@ -522,33 +704,7 @@ export class Scorer {
         if (this.verbose) {
           this.logger.debug(`Executing rubric command: ${command}`);
         }
-
-        const result = await execaCommand(command, {
-          cwd: this.workspaceRoot,
-          env: {
-            ...process.env,
-            STEP_PATH: resolvedStepPath
-          },
-          all: true,
-          reject: false,
-          shell: true
-        });
-
-        if (this.verbose && result.all?.trim()) {
-          this.logger.debug(result.all);
-        }
-
-        if (result.exitCode !== 0) {
-          throw new Error(
-            formatCommandFailure({
-              label: "Rubric command",
-              subject: stepPath,
-              command,
-              exitCode: result.exitCode ?? 1,
-              output: result.all
-            })
-          );
-        }
+        await this.executeRubricCommand(command, stepPath, resolvedStepPath);
       }
 
       const label = `evidence-${index + 1}`;
@@ -618,6 +774,129 @@ export class Scorer {
     candidateEvidence: EvidenceItem[];
   }): Promise<ScoreVote> {
     return this.getJudge(input.provider).generateVote(input);
+  }
+
+  private async executeRubricCommand(
+    command: string,
+    stepPath: string,
+    resolvedStepPath: string
+  ): Promise<void> {
+    const playwrightScreenshotCommand = parsePlaywrightHtmlScreenshotCommand(command);
+    if (playwrightScreenshotCommand) {
+      await this.captureHtmlScreenshot({
+        command,
+        stepPath,
+        stepRoot: resolvedStepPath,
+        inputPath: playwrightScreenshotCommand.inputPath,
+        outputPath: playwrightScreenshotCommand.outputPath
+      });
+      return;
+    }
+
+    const result = await execaCommand(command, {
+      cwd: this.workspaceRoot,
+      env: {
+        ...process.env,
+        STEP_PATH: resolvedStepPath
+      },
+      all: true,
+      reject: false,
+      shell: true
+    });
+
+    if (this.verbose && result.all?.trim()) {
+      this.logger.debug(result.all);
+    }
+
+    if (result.exitCode !== 0) {
+      throw new Error(
+        formatCommandFailure({
+          label: "Rubric command",
+          subject: stepPath,
+          command,
+          exitCode: result.exitCode ?? 1,
+          output: result.all
+        })
+      );
+    }
+  }
+
+  private async captureHtmlScreenshot(input: {
+    command: string;
+    stepPath: string;
+    stepRoot: string;
+    inputPath: string;
+    outputPath: string;
+  }): Promise<void> {
+    const normalizedInputPath = path.resolve(input.inputPath);
+    const normalizedOutputPath = path.resolve(input.outputPath);
+    const relativeInputPath = path.relative(input.stepRoot, normalizedInputPath);
+    if (
+      relativeInputPath.startsWith("..") ||
+      path.isAbsolute(relativeInputPath)
+    ) {
+      throw new Error(
+        `Rubric command input must stay within ${input.stepRoot}: ${input.command}`
+      );
+    }
+
+    const sessionId = `skill-autoresearch-${process.pid}-${Date.now()}-${Math.random()
+      .toString(16)
+      .slice(2)}`;
+    const screenshotServer = await startStaticFileServer(input.stepRoot);
+    const pageUrl = new URL(
+      relativeInputPath.split(path.sep).join("/"),
+      `${screenshotServer.origin}/`
+    ).toString();
+    const logOutput: string[] = [];
+
+    try {
+      await fs.ensureDir(path.dirname(normalizedOutputPath));
+
+      for (const args of [
+        [`-s=${sessionId}`, "open", pageUrl],
+        [`-s=${sessionId}`, "resize", "1440", "1080"],
+        [`-s=${sessionId}`, "screenshot", "--filename", normalizedOutputPath]
+      ]) {
+        const result = await execa("playwright-cli", args, {
+          cwd: this.workspaceRoot,
+          all: true,
+          reject: false
+        });
+
+        if (this.verbose && result.all?.trim()) {
+          this.logger.debug(result.all);
+        }
+
+        if (result.all?.trim()) {
+          logOutput.push(result.all.trim());
+        }
+
+        if (result.exitCode !== 0) {
+          throw new Error(
+            formatCommandFailure({
+              label: "Rubric command",
+              subject: input.stepPath,
+              command: input.command,
+              exitCode: result.exitCode ?? 1,
+              output: logOutput.join("\n")
+            })
+          );
+        }
+      }
+    } finally {
+      try {
+        await execa("playwright-cli", [`-s=${sessionId}`, "close"], {
+          cwd: this.workspaceRoot,
+          all: true,
+          reject: false
+        });
+      } catch {
+        // Ignore close failures. The scoring command already captured the relevant error.
+      }
+
+      await screenshotServer.close();
+    }
   }
 
   private getJudge(provider: ScoringProvider): VoteJudge {
