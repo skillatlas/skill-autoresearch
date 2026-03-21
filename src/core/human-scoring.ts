@@ -936,6 +936,10 @@ export class LocalHumanReviewService implements HumanReviewService {
         grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
       }
 
+      .workspace[hidden] {
+        display: none;
+      }
+
       .panel {
         display: grid;
         grid-template-rows: auto auto minmax(0, 1fr);
