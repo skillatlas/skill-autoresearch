@@ -1,4 +1,5 @@
 ---
+provider: openrouter
 model: google/gemini-3-flash-preview
 outputType: text
 command: cat "$STEP_PATH/index.html"

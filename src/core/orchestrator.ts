@@ -10,7 +10,6 @@ import {
 import { StateStore } from "./state-store.js";
 import { WorkspaceManager } from "./workspace.js";
 import { RunState } from "../types/state.js";
-import { ScoringProvider } from "../types/rubric.js";
 
 export interface RunOptions {
   workspaceRoot: string;
@@ -20,7 +19,6 @@ export interface RunOptions {
   maxSteps: number;
   stasisSteps?: number;
   resume: boolean;
-  scoringProviderOverride?: ScoringProvider;
   modelOverride?: string;
   dryRun: boolean;
 }
@@ -54,7 +52,6 @@ function createInitialState(
     skillsOriginalPath: workspace.relativeToRoot(workspace.paths.skillsOriginalDir),
     skillsPreviousPath: workspace.relativeToRoot(workspace.paths.skillsPreviousDir),
     incumbentPath: undefined,
-    scoringProviderOverride: options.scoringProviderOverride ?? null,
     modelOverride: options.modelOverride ?? null,
     currentPhase: "generate-baseline",
     activeCandidates: [],
@@ -186,7 +183,7 @@ export class Orchestrator {
     );
     this.logger.info(
       `Rubric scorer: ${
-        this.options.scoringProviderOverride ?? rubric.provider
+        rubric.provider
       }/${this.options.modelOverride ?? rubric.modelId} (${rubric.outputType})`
     );
   }
@@ -318,7 +315,6 @@ export class Orchestrator {
     }
 
     const rubric = await this.scorer.loadRubric(this.workspace.paths.rubricPath);
-    const scoringProvider = state.scoringProviderOverride ?? rubric.provider;
     const modelId = state.modelOverride ?? rubric.modelId;
     const incumbentEvidence = await this.scorer.collectEvidence(
       rubric,
@@ -337,7 +333,7 @@ export class Orchestrator {
       const candidateEvidence = await this.scorer.collectEvidence(rubric, candidate.path);
       for (let attempt = candidate.votes.length; attempt < state.voteCount; attempt += 1) {
         const vote = await this.scorer.runSingleVote({
-          provider: scoringProvider,
+          provider: rubric.provider,
           modelId,
           rubricPrompt: rubric.prompt,
           incumbentEvidence,
@@ -493,14 +489,6 @@ export class Orchestrator {
     }
     if ((state.modelOverride ?? undefined) !== this.options.modelOverride) {
       mismatches.push(`model=${state.modelOverride ?? "<rubric default>"}`);
-    }
-    if (
-      (state.scoringProviderOverride ?? undefined) !==
-      this.options.scoringProviderOverride
-    ) {
-      mismatches.push(
-        `scoring-provider=${state.scoringProviderOverride ?? "<rubric default>"}`
-      );
     }
 
     if (mismatches.length > 0) {

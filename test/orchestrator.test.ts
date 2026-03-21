@@ -396,17 +396,16 @@ describe("orchestrator integration", () => {
     expect(resumeScorer.voteCalls).toBe(2);
   });
 
-  it("persists and reuses the scoring provider override", async () => {
+  it("uses the scoring provider from the rubric", async () => {
     const workspaceRoot = await createWorkspaceCopy();
-    const scorer = new FakeScorer(workspaceRoot);
+    const scorer = new FakeScorer(workspaceRoot, { rubricProvider: "codex" });
 
     await runOrchestrator({
       workspaceRoot,
       options: {
         candidateCount: 1,
         voteCount: 1,
-        maxSteps: 1,
-        scoringProviderOverride: "codex"
+        maxSteps: 1
       },
       containerRunner: new FakeContainerRunner(workspaceRoot, {
         candidateScores: {
@@ -417,7 +416,7 @@ describe("orchestrator integration", () => {
     });
 
     const state = await readRunState(workspaceRoot);
-    expect(state.scoringProviderOverride).toBe("codex");
+    expect("scoringProviderOverride" in state).toBe(false);
     expect(scorer.providers).toEqual(["codex"]);
   });
 

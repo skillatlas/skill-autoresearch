@@ -143,6 +143,7 @@ export class FakeContainerRunner implements ContainerRunner {
 
 export interface FakeScorerOptions {
   failOnVoteNumber?: number;
+  rubricProvider?: ScoringProvider;
 }
 
 export class FakeScorer implements ScoringService {
@@ -158,7 +159,7 @@ export class FakeScorer implements ScoringService {
   public async loadRubric(rubricPath: string): Promise<NormalizedRubric> {
     return {
       sourcePath: rubricPath,
-      provider: "openrouter",
+      provider: this.options.rubricProvider ?? "openrouter",
       modelId: "test-model",
       outputType: "text",
       commands: [{ command: 'cat "$STEP_PATH/index.html"' }],

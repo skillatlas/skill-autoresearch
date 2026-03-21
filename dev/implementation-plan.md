@@ -260,6 +260,7 @@ Recommended `RUBRIC.md` structure:
 
 ```md
 ---
+provider: openrouter
 model: openai/gpt-4.1
 outputType: text
 command: cat "$STEP_PATH/index.html"
@@ -272,6 +273,7 @@ If images are needed:
 
 ```md
 ---
+provider: openrouter
 model: anthropic/claude-3.7-sonnet
 outputType: image
 command: playwright-cli screenshot "$STEP_PATH/index.html" "$STEP_PATH/__score.png"
@@ -290,6 +292,7 @@ Recommended normalized frontmatter:
 
 ```md
 ---
+provider: openrouter
 model: openai/gpt-4.1
 outputType: text
 commands:
@@ -301,6 +304,7 @@ Array example:
 
 ```md
 ---
+provider: openrouter
 model: anthropic/claude-3.7-sonnet
 outputType: image
 commands:

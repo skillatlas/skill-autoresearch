@@ -1,7 +1,5 @@
 import { z } from "zod";
 
-import { scoringProviderSchema } from "./rubric.js";
-
 export const runStatusSchema = z.enum([
   "idle",
   "running",
@@ -76,7 +74,6 @@ export const runStateSchema = z.object({
   skillsOriginalPath: z.string(),
   skillsPreviousPath: z.string(),
   incumbentPath: z.string().optional(),
-  scoringProviderOverride: scoringProviderSchema.nullable().optional(),
   modelOverride: z.string().nullable().optional(),
   currentPhase: runPhaseSchema,
   activeCandidates: z.array(activeCandidateSchema),
