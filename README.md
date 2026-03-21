@@ -175,10 +175,8 @@ You are a design critic evaluating two HTML pages. Score them on visual identity
 | `http_server` | Optional. `true` starts an ephemeral local server for the step directory; a number uses that exact port. Exposes `$STEP_ORIGIN` to rubric commands. |
 | `commands` | Array of evidence-collection steps |
 | `commands[].outputType` | `text` or `image` |
-| `commands[].command` | Shell command to produce evidence, or a built-in rubric helper such as `capture-screenshot` (optional — omit to read the file directly) |
+| `commands[].command` | Shell command to produce evidence, or a built-in rubric helper such as `skill-autoresearch capture-screenshot` (optional — omit to read the file directly) |
 | `commands[].resultPath` | Path to the evidence file. `$STEP_PATH` is replaced at runtime. |
-
-Rubric commands also receive `$RUBRIC_RUN_ID`, a unique identifier for that evidence-collection pass. If a CLI needs a process-local session or socket name, combine it with `$$` as shown above.
 
 ### `skills/<name>/SKILL.md`
 
