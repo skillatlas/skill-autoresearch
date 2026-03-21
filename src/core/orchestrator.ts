@@ -67,6 +67,13 @@ function completedIterations(state: RunState): number {
   return state.history.length;
 }
 
+function formatCandidateGenerationLabel(
+  stepIndex: number,
+  candidateIndex: number
+): string {
+  return `Candidate ${candidateIndex} generation for step ${stepIndex}`;
+}
+
 export class Orchestrator {
   private pendingStateSave: Promise<void> = Promise.resolve();
 
@@ -292,6 +299,10 @@ export class Orchestrator {
 
     await this.runInParallel(pendingCandidates, async (candidate) => {
       const candidateDir = this.workspace.resolveWorkspacePath(candidate.path);
+      const generationLabel = formatCandidateGenerationLabel(
+        state.stepIndex,
+        candidate.index
+      );
       await this.workspace.resetDirectory(candidateDir);
       const sandbox = await this.workspace.createGenerationSandbox(candidateDir);
 
@@ -300,18 +311,14 @@ export class Orchestrator {
           containerRoot: sandbox.containerRoot,
           targetPath: sandbox.targetPath,
           prompt,
-          label: `Candidate generation for step ${state.stepIndex}/${candidate.index}`
+          label: generationLabel
         });
       } finally {
         await sandbox.cleanup();
       }
-      await this.workspace.assertDirectoryContainsFiles(
-        candidateDir,
-        `Candidate generation for step ${state.stepIndex}/${candidate.index}`,
-        {
-          ignoredTopLevelEntries: ["skills"]
-        }
-      );
+      await this.workspace.assertDirectoryContainsFiles(candidateDir, generationLabel, {
+        ignoredTopLevelEntries: ["skills"]
+      });
       candidate.status = "generated";
       await this.saveState(state);
       this.logger.info(`Generated candidate ${candidate.index} at ${candidate.path}`);

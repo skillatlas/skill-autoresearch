@@ -137,7 +137,7 @@ describe("orchestrator integration", () => {
         scorer: new FakeScorer(workspaceRoot)
       })
     ).rejects.toThrow(
-      "Candidate generation for step 1/0 did not create any files in steps/1/candidates/0."
+      "Candidate 0 generation for step 1 did not create any files in steps/1/candidates/0."
     );
   });
 
