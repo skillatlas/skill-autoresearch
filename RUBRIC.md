@@ -3,13 +3,15 @@ provider: openrouter
 model: google/gemini-3-flash-preview
 commands:
   - outputType: text
-    command: cat "$STEP_PATH/index.html"
+    resultPath: "$STEP_PATH/index.html"
   - outputType: image
     command: playwright-cli screenshot "$STEP_PATH/index.html" "$STEP_PATH/index.png"
     resultPath: "$STEP_PATH/index.png"
 ---
 
 You are a senior design critic and frontend engineer evaluating two candidate HTML pages. Each candidate is a self-contained `index.html` for a creative studio landing page. Score them on the dimensions below, then declare a winner.
+
+In rubric frontmatter, `resultPath` is the evidence file the scorer reads. `command` is optional preprocessing that creates or updates that file before scoring.
 
 ## Evaluation dimensions
 

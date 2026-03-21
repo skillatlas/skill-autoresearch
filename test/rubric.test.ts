@@ -15,7 +15,7 @@ describe("rubric parsing", () => {
 provider: openrouter
 model: openai/gpt-4.1
 outputType: text
-command: cat "$STEP_PATH/index.html"
+resultPath: "$STEP_PATH/index.html"
 ---
 
 Judge the outputs.`,
@@ -26,7 +26,7 @@ Judge the outputs.`,
     expect(rubric.provider).toBe("openrouter");
     expect(rubric.modelId).toBe("openai/gpt-4.1");
     expect(rubric.commands).toEqual([
-      { outputType: "text", command: 'cat "$STEP_PATH/index.html"' }
+      { outputType: "text", resultPath: "$STEP_PATH/index.html" }
     ]);
     expect(rubric.prompt).toBe("Judge the outputs.");
   });
@@ -78,7 +78,7 @@ provider: openrouter
 model: openai/gpt-4.1
 commands:
   outputType: text
-  command: cat "$STEP_PATH/index.html"
+  resultPath: "$STEP_PATH/index.html"
 ---
 
 Judge the outputs.`,
@@ -87,7 +87,7 @@ Judge the outputs.`,
 
     const rubric = await loadRubric(rubricPath);
     expect(rubric.commands).toEqual([
-      { outputType: "text", command: 'cat "$STEP_PATH/index.html"' }
+      { outputType: "text", resultPath: "$STEP_PATH/index.html" }
     ]);
   });
 
@@ -102,7 +102,7 @@ provider: openrouter
 model: openai/gpt-4.1
 commands:
   - outputType: text
-    command: cat "$STEP_PATH/index.html"
+    resultPath: "$STEP_PATH/index.html"
   - outputType: image
     command: make-shot "$STEP_PATH/index.html" "$STEP_PATH/hero.png"
     resultPath: "$STEP_PATH/hero.png"
@@ -114,7 +114,7 @@ Judge the outputs.`,
 
     const rubric = await loadRubric(rubricPath);
     expect(rubric.commands).toEqual([
-      { outputType: "text", command: 'cat "$STEP_PATH/index.html"' },
+      { outputType: "text", resultPath: "$STEP_PATH/index.html" },
       {
         outputType: "image",
         command: 'make-shot "$STEP_PATH/index.html" "$STEP_PATH/hero.png"',
@@ -132,7 +132,7 @@ Judge the outputs.`,
       `---
 model: openai/gpt-4.1
 outputType: text
-command: cat "$STEP_PATH/index.html"
+resultPath: "$STEP_PATH/index.html"
 ---
 
 Judge the outputs.`,
@@ -152,7 +152,7 @@ Judge the outputs.`,
 provider: codex
 model: gpt-5.4
 outputType: text
-command: cat "$STEP_PATH/index.html"
+resultPath: "$STEP_PATH/index.html"
 ---
 
 Judge the outputs.`,
@@ -174,7 +174,7 @@ Judge the outputs.`,
 provider: openrouter
 model: openai/gpt-4.1
 commands:
-  - command: cat "$STEP_PATH/index.html"
+  - resultPath: "$STEP_PATH/index.html"
 ---
 
 Judge the outputs.`,
@@ -183,6 +183,28 @@ Judge the outputs.`,
 
     await expect(loadRubric(rubricPath)).rejects.toThrow(
       "Each rubric command must define `outputType` when no top-level `outputType` is set."
+    );
+  });
+
+  it("requires top-level resultPath when commands are omitted", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "rubric-"));
+    const rubricPath = path.join(tempDir, "RUBRIC.md");
+
+    await fs.writeFile(
+      rubricPath,
+      `---
+provider: openrouter
+model: openai/gpt-4.1
+outputType: text
+command: cat "$STEP_PATH/index.html"
+---
+
+Judge the outputs.`,
+      "utf8"
+    );
+
+    await expect(loadRubric(rubricPath)).rejects.toThrow(
+      "Rubric frontmatter must contain either `resultPath` or `commands`."
     );
   });
 

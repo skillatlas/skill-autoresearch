@@ -5,8 +5,11 @@ export const evidenceOutputTypeSchema = z.enum(["text", "image"]);
 
 export const normalizedRubricCommandSchema = z.object({
   outputType: evidenceOutputTypeSchema,
-  command: z.string().min(1, "Rubric command must be a non-empty string."),
-  resultPath: z.string().min(1).optional()
+  command: z
+    .string()
+    .min(1, "Rubric command must be a non-empty string.")
+    .optional(),
+  resultPath: z.string().min(1, "Rubric resultPath must be a non-empty string.")
 });
 
 export const normalizedRubricSchema = z.object({

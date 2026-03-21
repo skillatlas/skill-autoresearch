@@ -10,8 +10,8 @@ import {
 
 const rawRubricCommandSchema = z.object({
   outputType: evidenceOutputTypeSchema.optional(),
-  command: z.string().min(1),
-  resultPath: z.string().min(1).optional()
+  command: z.string().min(1).optional(),
+  resultPath: z.string().min(1)
 });
 
 const rawRubricFrontmatterSchema = z
@@ -26,31 +26,25 @@ const rawRubricFrontmatterSchema = z
       .optional()
   })
   .superRefine((value, ctx) => {
-    if (!value.command && !value.commands) {
+    if (!value.resultPath && !value.commands) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Rubric frontmatter must contain either `command` or `commands`."
+        message: "Rubric frontmatter must contain either `resultPath` or `commands`."
       });
     }
 
-    if (value.command && value.commands) {
+    if ((value.command || value.resultPath) && value.commands) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Rubric frontmatter cannot contain both `command` and `commands`."
+        message:
+          "Rubric frontmatter cannot combine top-level `command`/`resultPath` with `commands`."
       });
     }
 
-    if (!value.command && value.resultPath) {
+    if (!value.commands && !value.outputType) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "`resultPath` requires a matching top-level `command`."
-      });
-    }
-
-    if (value.command && !value.outputType) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Top-level `command` requires a matching top-level `outputType`."
+        message: "Top-level `resultPath` requires a matching top-level `outputType`."
       });
     }
 
@@ -96,8 +90,8 @@ export async function loadRubric(rubricPath: string): Promise<NormalizedRubric> 
     : [
         {
           outputType: frontmatter.outputType,
-          command: frontmatter.command!,
-          resultPath: frontmatter.resultPath
+          command: frontmatter.command,
+          resultPath: frontmatter.resultPath!
         }
       ];
 
@@ -106,10 +100,6 @@ export async function loadRubric(rubricPath: string): Promise<NormalizedRubric> 
     command: commandDefinition.command,
     resultPath: commandDefinition.resultPath
   }));
-
-  if (commands.some((command) => command.outputType === "image" && !command.resultPath)) {
-    throw new Error("Image rubric commands must define `resultPath`.");
-  }
 
   return normalizedRubricSchema.parse({
     sourcePath: rubricPath,

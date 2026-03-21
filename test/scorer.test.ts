@@ -93,6 +93,7 @@ describe("scoring helpers", () => {
   it("collects mixed text and image evidence from one rubric", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "scorer-"));
     await fs.ensureDir(path.join(workspaceRoot, "step"));
+    await fs.writeFile(path.join(workspaceRoot, "step", "headline.txt"), "headline\n", "utf8");
     const scorer = new Scorer(
       workspaceRoot,
       new Logger(false),
@@ -119,7 +120,7 @@ describe("scoring helpers", () => {
         commands: [
           {
             outputType: "text",
-            command: "node -e \"process.stdout.write('headline\\n')\""
+            resultPath: "$STEP_PATH/headline.txt"
           },
           {
             outputType: "image",
@@ -136,12 +137,12 @@ describe("scoring helpers", () => {
     expect(evidence).toHaveLength(2);
     expect(evidence[0]).toEqual({
       outputType: "text",
-      label: "command-1",
+      label: "evidence-1",
       content: "headline"
     });
     expect(evidence[1]).toMatchObject({
       outputType: "image",
-      label: "command-2",
+      label: "evidence-2",
       path: path.join(workspaceRoot, "step", "shot.png"),
       mimeType: "image/png"
     });
