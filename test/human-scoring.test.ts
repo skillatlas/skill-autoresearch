@@ -89,8 +89,8 @@ describe("LocalHumanReviewService", () => {
     expect(shellResponse.ok).toBe(true);
     expect(shellHtml).toContain('data-viewport="480"');
     expect(shellHtml).toContain('data-viewport="960"');
-    expect(shellHtml).toContain('id="incumbent-wrap"');
-    expect(shellHtml).toContain('id="candidate-wrap"');
+    expect(shellHtml).toContain('id="incumbent-preview" hidden');
+    expect(shellHtml).toContain('id="candidate-preview" hidden');
 
     const sessionResponse = await fetch(`${baseUrl}/api/session`);
     const session = (await sessionResponse.json()) as {
@@ -121,6 +121,15 @@ describe("LocalHumanReviewService", () => {
 
     await reviewPromise;
     expect(recordedWinners).toEqual(["B"]);
+
+    const finalSessionResponse = await fetch(`${baseUrl}/api/session`);
+    const finalSession = (await finalSessionResponse.json()) as {
+      mode: string;
+      current: unknown;
+    };
+    expect(finalSession.mode).toBe("running");
+    expect(finalSession.current).toBeNull();
+
     await service.close();
   });
 });

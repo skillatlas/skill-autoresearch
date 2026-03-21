@@ -1065,6 +1065,10 @@ export class LocalHumanReviewService implements HumanReviewService {
         padding: 0 18px 18px;
       }
 
+      .preview-shell[hidden] {
+        display: none;
+      }
+
       .frame-wrap {
         position: relative;
         width: 100%;
@@ -1259,7 +1263,7 @@ export class LocalHumanReviewService implements HumanReviewService {
           <div class="panel-copy">
             <div class="panel-path" id="incumbent-path"></div>
           </div>
-          <div class="preview-shell">
+          <div class="preview-shell" id="incumbent-preview" hidden>
             <div class="frame-wrap" id="incumbent-wrap">
               <iframe id="incumbent-frame" title="Incumbent artifact" loading="eager"></iframe>
             </div>
@@ -1278,7 +1282,7 @@ export class LocalHumanReviewService implements HumanReviewService {
           <div class="panel-copy">
             <div class="panel-path" id="candidate-path"></div>
           </div>
-          <div class="preview-shell">
+          <div class="preview-shell" id="candidate-preview" hidden>
             <div class="frame-wrap" id="candidate-wrap">
               <iframe id="candidate-frame" title="Candidate artifact" loading="eager"></iframe>
             </div>
@@ -1298,6 +1302,8 @@ export class LocalHumanReviewService implements HumanReviewService {
       const incumbentPath = document.getElementById("incumbent-path");
       const candidatePath = document.getElementById("candidate-path");
       const candidateLabel = document.getElementById("candidate-label");
+      const incumbentPreview = document.getElementById("incumbent-preview");
+      const candidatePreview = document.getElementById("candidate-preview");
       const incumbentWrap = document.getElementById("incumbent-wrap");
       const candidateWrap = document.getElementById("candidate-wrap");
       const incumbentFrame = document.getElementById("incumbent-frame");
@@ -1551,6 +1557,15 @@ export class LocalHumanReviewService implements HumanReviewService {
         openCandidate.href = "#";
       }
 
+      function setPreviewVisibility(visible) {
+        incumbentPreview.hidden = !visible;
+        candidatePreview.hidden = !visible;
+
+        if (visible) {
+          layoutPreviewFrames();
+        }
+      }
+
       function render(session) {
         currentSession = session;
         const ratio = session.totalUnits === 0 ? 0 : session.completedUnits / session.totalUnits;
@@ -1571,6 +1586,7 @@ export class LocalHumanReviewService implements HumanReviewService {
         promptMeta.textContent = session.summary;
 
         if (session.mode !== "review" || !session.current) {
+          setPreviewVisibility(false);
           clearFrames();
           setVotingEnabled(false);
           status.textContent =
@@ -1587,11 +1603,11 @@ export class LocalHumanReviewService implements HumanReviewService {
         candidatePath.textContent = session.current.candidatePath;
         resetPreviewFrame(previewFrames[0]);
         resetPreviewFrame(previewFrames[1]);
+        setPreviewVisibility(true);
         incumbentFrame.src = session.current.incumbentUrl;
         candidateFrame.src = session.current.candidateUrl;
         openIncumbent.href = session.current.incumbentUrl;
         openCandidate.href = session.current.candidateUrl;
-        layoutPreviewFrames();
         setVotingEnabled(true);
         status.textContent = "Which version looks better?";
       }
