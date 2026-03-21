@@ -63,6 +63,29 @@ interface SessionCandidate {
   path: string;
 }
 
+interface SessionDiffLine {
+  type: "context" | "added" | "removed" | "spacer";
+  oldLineNumber: number | null;
+  newLineNumber: number | null;
+  text: string;
+  omittedLineCount?: number;
+}
+
+interface SessionDiffFile {
+  path: string;
+  status: "added" | "removed" | "modified";
+  addedLineCount: number;
+  removedLineCount: number;
+  lines: SessionDiffLine[];
+}
+
+interface SessionSkillDiff {
+  basePath: string;
+  currentPath: string;
+  changedFileCount: number;
+  files: SessionDiffFile[];
+}
+
 const PREVIEW_VIEWPORTS = [480, 960] as const;
 const DEFAULT_PREVIEW_VIEWPORT = 960;
 const DEFAULT_PREVIEW_HEIGHT = 420;
@@ -147,6 +170,195 @@ async function listArtifactFiles(rootPath: string): Promise<string[]> {
 
   await walk(rootPath);
   return files;
+}
+
+function listRelativeFilesSync(rootPath: string): string[] {
+  if (!fs.existsSync(rootPath)) {
+    return [];
+  }
+
+  const files: string[] = [];
+
+  function walk(currentPath: string): void {
+    const entries = fs.readdirSync(currentPath, { withFileTypes: true });
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+
+    for (const entry of entries) {
+      const absolutePath = path.join(currentPath, entry.name);
+      if (entry.isDirectory()) {
+        walk(absolutePath);
+        continue;
+      }
+
+      files.push(path.relative(rootPath, absolutePath).split(path.sep).join("/"));
+    }
+  }
+
+  walk(rootPath);
+  return files;
+}
+
+function normalizeFileContent(value: string): string {
+  return value.replaceAll("\r\n", "\n");
+}
+
+function splitFileLines(value: string): string[] {
+  if (value.length === 0) {
+    return [];
+  }
+
+  const normalized = normalizeFileContent(value);
+  const lines = normalized.split("\n");
+  if (normalized.endsWith("\n")) {
+    lines.pop();
+  }
+
+  return lines;
+}
+
+function buildRawDiffLines(
+  beforeLines: string[],
+  afterLines: string[]
+): SessionDiffLine[] {
+  const lcs = Array.from({ length: beforeLines.length + 1 }, () =>
+    Array<number>(afterLines.length + 1).fill(0)
+  );
+
+  for (let beforeIndex = beforeLines.length - 1; beforeIndex >= 0; beforeIndex -= 1) {
+    for (let afterIndex = afterLines.length - 1; afterIndex >= 0; afterIndex -= 1) {
+      lcs[beforeIndex]![afterIndex] =
+        beforeLines[beforeIndex] === afterLines[afterIndex]
+          ? (lcs[beforeIndex + 1]?.[afterIndex + 1] ?? 0) + 1
+          : Math.max(
+              lcs[beforeIndex + 1]?.[afterIndex] ?? 0,
+              lcs[beforeIndex]?.[afterIndex + 1] ?? 0
+            );
+    }
+  }
+
+  const lines: SessionDiffLine[] = [];
+  let beforeIndex = 0;
+  let afterIndex = 0;
+  let oldLineNumber = 1;
+  let newLineNumber = 1;
+
+  while (beforeIndex < beforeLines.length && afterIndex < afterLines.length) {
+    if (beforeLines[beforeIndex] === afterLines[afterIndex]) {
+      lines.push({
+        type: "context",
+        oldLineNumber,
+        newLineNumber,
+        text: beforeLines[beforeIndex]
+      });
+      beforeIndex += 1;
+      afterIndex += 1;
+      oldLineNumber += 1;
+      newLineNumber += 1;
+      continue;
+    }
+
+    if ((lcs[beforeIndex + 1]?.[afterIndex] ?? 0) >= (lcs[beforeIndex]?.[afterIndex + 1] ?? 0)) {
+      lines.push({
+        type: "removed",
+        oldLineNumber,
+        newLineNumber: null,
+        text: beforeLines[beforeIndex]
+      });
+      beforeIndex += 1;
+      oldLineNumber += 1;
+      continue;
+    }
+
+    lines.push({
+      type: "added",
+      oldLineNumber: null,
+      newLineNumber,
+      text: afterLines[afterIndex]
+    });
+    afterIndex += 1;
+    newLineNumber += 1;
+  }
+
+  while (beforeIndex < beforeLines.length) {
+    lines.push({
+      type: "removed",
+      oldLineNumber,
+      newLineNumber: null,
+      text: beforeLines[beforeIndex]
+    });
+    beforeIndex += 1;
+    oldLineNumber += 1;
+  }
+
+  while (afterIndex < afterLines.length) {
+    lines.push({
+      type: "added",
+      oldLineNumber: null,
+      newLineNumber,
+      text: afterLines[afterIndex]
+    });
+    afterIndex += 1;
+    newLineNumber += 1;
+  }
+
+  return lines;
+}
+
+function compactDiffLines(
+  lines: SessionDiffLine[],
+  contextRadius = 3
+): SessionDiffLine[] {
+  const changedIndexes = lines.flatMap((line, index) =>
+    line.type === "added" || line.type === "removed" ? [index] : []
+  );
+
+  if (changedIndexes.length === 0) {
+    return [];
+  }
+
+  const ranges: Array<{ start: number; end: number }> = [];
+  for (const index of changedIndexes) {
+    const start = Math.max(0, index - contextRadius);
+    const end = Math.min(lines.length - 1, index + contextRadius);
+    const previousRange = ranges[ranges.length - 1];
+
+    if (previousRange && start <= previousRange.end + 1) {
+      previousRange.end = Math.max(previousRange.end, end);
+      continue;
+    }
+
+    ranges.push({ start, end });
+  }
+
+  const compacted: SessionDiffLine[] = [];
+  let cursor = 0;
+
+  for (const range of ranges) {
+    if (range.start > cursor) {
+      compacted.push({
+        type: "spacer",
+        oldLineNumber: null,
+        newLineNumber: null,
+        text: "",
+        omittedLineCount: range.start - cursor
+      });
+    }
+
+    compacted.push(...lines.slice(range.start, range.end + 1));
+    cursor = range.end + 1;
+  }
+
+  if (cursor < lines.length) {
+    compacted.push({
+      type: "spacer",
+      oldLineNumber: null,
+      newLineNumber: null,
+      text: "",
+      omittedLineCount: lines.length - cursor
+    });
+  }
+
+  return compacted;
 }
 
 async function readRequestBody(request: IncomingMessage): Promise<string> {
@@ -377,7 +589,72 @@ export class LocalHumanReviewService implements HumanReviewService {
       completedUnits: progress.completed,
       totalUnits: progress.total,
       current: currentReview,
-      candidates
+      candidates,
+      skillDiff: this.buildSkillDiff()
+    };
+  }
+
+  private buildSkillDiff(): SessionSkillDiff | null {
+    const state = this.latestState;
+    if (!state) {
+      return null;
+    }
+
+    const basePath = path.resolve(state.workspaceRoot, state.skillsOriginalPath);
+    const currentPath = path.resolve(state.workspaceRoot, "skills");
+    if (!fs.existsSync(basePath) || !fs.existsSync(currentPath)) {
+      return null;
+    }
+
+    const filePaths = [...new Set([...listRelativeFilesSync(basePath), ...listRelativeFilesSync(currentPath)])]
+      .sort((left, right) => left.localeCompare(right));
+    const files: SessionDiffFile[] = [];
+
+    for (const relativePath of filePaths) {
+      const baseFilePath = path.join(basePath, relativePath);
+      const currentFilePath = path.join(currentPath, relativePath);
+      const hasBaseFile = fs.existsSync(baseFilePath);
+      const hasCurrentFile = fs.existsSync(currentFilePath);
+
+      if (!hasBaseFile && !hasCurrentFile) {
+        continue;
+      }
+
+      const baseContent = hasBaseFile
+        ? normalizeFileContent(fs.readFileSync(baseFilePath, "utf8"))
+        : "";
+      const currentContent = hasCurrentFile
+        ? normalizeFileContent(fs.readFileSync(currentFilePath, "utf8"))
+        : "";
+
+      if (baseContent === currentContent) {
+        continue;
+      }
+
+      const rawLines = buildRawDiffLines(
+        splitFileLines(baseContent),
+        splitFileLines(currentContent)
+      );
+
+      files.push({
+        path: relativePath,
+        status:
+          !hasBaseFile ? "added" : !hasCurrentFile ? "removed" : "modified",
+        addedLineCount: rawLines.filter((line) => line.type === "added").length,
+        removedLineCount: rawLines.filter((line) => line.type === "removed").length,
+        lines: compactDiffLines(rawLines)
+      });
+    }
+
+    if (files.length === 0) {
+      return null;
+    }
+
+    return {
+      basePath: state.skillsOriginalPath,
+      currentPath: "skills",
+      changedFileCount: files.length,
+      files
     };
   }
 
@@ -1126,6 +1403,195 @@ export class LocalHumanReviewService implements HumanReviewService {
         font-size: 14px;
       }
 
+      .diff-section {
+        display: grid;
+        gap: 16px;
+        padding: 22px;
+        background: rgba(255, 252, 247, 0.94);
+        border: 1px solid var(--line);
+        box-shadow: var(--shadow);
+      }
+
+      .diff-section[hidden] {
+        display: none;
+      }
+
+      .diff-header {
+        display: grid;
+        gap: 8px;
+      }
+
+      .diff-header-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .diff-title {
+        margin: 0;
+        font-size: clamp(24px, 3vw, 34px);
+        line-height: 1.04;
+        letter-spacing: -0.02em;
+      }
+
+      .diff-summary {
+        color: var(--muted);
+        font-family: "Courier New", monospace;
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .diff-subhead {
+        margin: 0;
+        max-width: 72ch;
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.6;
+      }
+
+      .diff-files {
+        display: grid;
+        gap: 16px;
+      }
+
+      .diff-file {
+        overflow: hidden;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.75);
+      }
+
+      .diff-file-header {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--line);
+        background:
+          linear-gradient(90deg, rgba(180, 63, 40, 0.08), transparent 42%),
+          rgba(255, 249, 241, 0.98);
+      }
+
+      .diff-file-path {
+        margin: 0;
+        font-family: "Courier New", monospace;
+        font-size: 13px;
+        line-height: 1.5;
+        word-break: break-all;
+      }
+
+      .diff-file-meta {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+
+      .diff-pill {
+        display: inline-flex;
+        align-items: center;
+        padding: 6px 10px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.78);
+        font-family: "Courier New", monospace;
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .diff-pill[data-tone="added"] {
+        border-color: rgba(28, 96, 55, 0.24);
+        color: #1c6037;
+        background: rgba(28, 96, 55, 0.08);
+      }
+
+      .diff-pill[data-tone="removed"] {
+        border-color: rgba(139, 32, 32, 0.22);
+        color: #8b2020;
+        background: rgba(139, 32, 32, 0.08);
+      }
+
+      .diff-code {
+        overflow-x: auto;
+        background:
+          linear-gradient(180deg, rgba(23, 18, 13, 0.025), transparent 18%),
+          rgba(253, 251, 247, 0.96);
+      }
+
+      .diff-line {
+        display: grid;
+        grid-template-columns: 56px 56px 22px minmax(0, 1fr);
+        align-items: stretch;
+        min-width: min(100%, 840px);
+        border-bottom: 1px solid rgba(23, 18, 13, 0.05);
+        font-family: "SFMono-Regular", "Menlo", "Monaco", "Courier New", monospace;
+        font-size: 12px;
+        line-height: 1.6;
+      }
+
+      .diff-line:last-child {
+        border-bottom: 0;
+      }
+
+      .diff-line--added {
+        background: rgba(28, 96, 55, 0.08);
+      }
+
+      .diff-line--removed {
+        background: rgba(139, 32, 32, 0.08);
+      }
+
+      .diff-line--spacer {
+        display: block;
+        min-width: 0;
+        padding: 10px 16px;
+        color: var(--muted);
+        font-family: "Courier New", monospace;
+        font-size: 12px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        background: rgba(23, 18, 13, 0.04);
+      }
+
+      .diff-line-number,
+      .diff-line-sign,
+      .diff-line-code {
+        padding: 6px 10px;
+      }
+
+      .diff-line-number {
+        color: rgba(23, 18, 13, 0.48);
+        text-align: right;
+        user-select: none;
+      }
+
+      .diff-line-sign {
+        color: rgba(23, 18, 13, 0.58);
+        text-align: center;
+        user-select: none;
+      }
+
+      .diff-line--added .diff-line-sign {
+        color: #1c6037;
+      }
+
+      .diff-line--removed .diff-line-sign {
+        color: #8b2020;
+      }
+
+      .diff-line-code {
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
       @media (max-width: 960px) {
         .header,
         .workspace {
@@ -1147,6 +1613,14 @@ export class LocalHumanReviewService implements HumanReviewService {
 
         .panel-actions {
           justify-content: flex-start;
+        }
+
+        .diff-file-header {
+          position: static;
+        }
+
+        .diff-line {
+          grid-template-columns: 48px 48px 18px minmax(240px, 1fr);
         }
       }
     </style>
@@ -1225,6 +1699,18 @@ export class LocalHumanReviewService implements HumanReviewService {
         </article>
       </section>
 
+      <section class="diff-section" id="skill-diff-section" hidden>
+        <div class="diff-header">
+          <p class="eyebrow">Skill diff</p>
+          <div class="diff-header-row">
+            <h2 class="diff-title">Current skills vs original</h2>
+            <div class="diff-summary" id="skill-diff-summary"></div>
+          </div>
+          <p class="diff-subhead" id="skill-diff-paths"></p>
+        </div>
+        <div class="diff-files" id="skill-diff-files"></div>
+      </section>
+
       <div class="status" id="status" hidden></div>
     </main>
 
@@ -1248,6 +1734,10 @@ export class LocalHumanReviewService implements HumanReviewService {
       const candidateFrame = document.getElementById("candidate-frame");
       const openIncumbent = document.getElementById("open-incumbent");
       const openCandidate = document.getElementById("open-candidate");
+      const skillDiffSection = document.getElementById("skill-diff-section");
+      const skillDiffSummary = document.getElementById("skill-diff-summary");
+      const skillDiffPaths = document.getElementById("skill-diff-paths");
+      const skillDiffFiles = document.getElementById("skill-diff-files");
       const status = document.getElementById("status");
       const voteButtons = Array.from(document.querySelectorAll("button[data-winner]"));
       const viewportButtons = Array.from(document.querySelectorAll("button[data-viewport]"));
@@ -1365,6 +1855,125 @@ export class LocalHumanReviewService implements HumanReviewService {
         openCandidate.href = "#";
       }
 
+      function pluralize(count, singular, plural) {
+        return count === 1 ? singular : plural;
+      }
+
+      function createDiffPill(text, tone) {
+        const pill = document.createElement("span");
+        pill.className = "diff-pill";
+        if (tone) {
+          pill.dataset.tone = tone;
+        }
+        pill.textContent = text;
+        return pill;
+      }
+
+      function clearSkillDiff() {
+        skillDiffSection.hidden = true;
+        skillDiffSummary.textContent = "";
+        skillDiffPaths.textContent = "";
+        skillDiffFiles.innerHTML = "";
+      }
+
+      function renderSkillDiff(skillDiff) {
+        if (!skillDiff || !Array.isArray(skillDiff.files) || skillDiff.files.length === 0) {
+          clearSkillDiff();
+          return;
+        }
+
+        skillDiffSection.hidden = false;
+        skillDiffSummary.textContent =
+          skillDiff.changedFileCount +
+          " " +
+          pluralize(skillDiff.changedFileCount, "changed file", "changed files");
+        skillDiffPaths.textContent =
+          skillDiff.basePath + " compared with " + skillDiff.currentPath;
+        skillDiffFiles.innerHTML = "";
+
+        for (const file of skillDiff.files) {
+          const card = document.createElement("article");
+          card.className = "diff-file";
+
+          const header = document.createElement("header");
+          header.className = "diff-file-header";
+
+          const filePath = document.createElement("p");
+          filePath.className = "diff-file-path";
+          filePath.textContent = file.path;
+
+          const meta = document.createElement("div");
+          meta.className = "diff-file-meta";
+          meta.appendChild(createDiffPill(file.status, null));
+          meta.appendChild(
+            createDiffPill(
+              "+" + file.addedLineCount + " " + pluralize(file.addedLineCount, "line", "lines"),
+              "added"
+            )
+          );
+          meta.appendChild(
+            createDiffPill(
+              "-" +
+                file.removedLineCount +
+                " " +
+                pluralize(file.removedLineCount, "line", "lines"),
+              "removed"
+            )
+          );
+
+          header.appendChild(filePath);
+          header.appendChild(meta);
+
+          const code = document.createElement("div");
+          code.className = "diff-code";
+
+          for (const line of file.lines) {
+            if (line.type === "spacer") {
+              const spacer = document.createElement("div");
+              spacer.className = "diff-line diff-line--spacer";
+              spacer.textContent =
+                (line.omittedLineCount ?? 0) +
+                " unchanged " +
+                pluralize(line.omittedLineCount ?? 0, "line", "lines");
+              code.appendChild(spacer);
+              continue;
+            }
+
+            const row = document.createElement("div");
+            row.className = "diff-line diff-line--" + line.type;
+
+            const oldNumber = document.createElement("span");
+            oldNumber.className = "diff-line-number";
+            oldNumber.textContent =
+              line.oldLineNumber === null ? "" : String(line.oldLineNumber);
+
+            const newNumber = document.createElement("span");
+            newNumber.className = "diff-line-number";
+            newNumber.textContent =
+              line.newLineNumber === null ? "" : String(line.newLineNumber);
+
+            const sign = document.createElement("span");
+            sign.className = "diff-line-sign";
+            sign.textContent =
+              line.type === "added" ? "+" : line.type === "removed" ? "-" : " ";
+
+            const content = document.createElement("pre");
+            content.className = "diff-line-code";
+            content.textContent = line.text.length === 0 ? " " : line.text;
+
+            row.appendChild(oldNumber);
+            row.appendChild(newNumber);
+            row.appendChild(sign);
+            row.appendChild(content);
+            code.appendChild(row);
+          }
+
+          card.appendChild(header);
+          card.appendChild(code);
+          skillDiffFiles.appendChild(card);
+        }
+      }
+
       function setPreviewVisibility(visible) {
         previewControls.hidden = !visible;
         reviewWorkspace.hidden = !visible;
@@ -1396,6 +2005,7 @@ export class LocalHumanReviewService implements HumanReviewService {
 
         promptTitle.textContent = session.phaseLabel;
         promptMeta.textContent = session.summary;
+        renderSkillDiff(session.skillDiff);
 
         if (session.mode !== "review" || !session.current) {
           setPreviewVisibility(false);
