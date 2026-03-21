@@ -2,7 +2,9 @@ import fs from "fs-extra";
 import path from "node:path";
 
 import { Logger } from "./logger.js";
+import { loadGeneration } from "./generation.js";
 import { ScoringMode } from "../types/state.js";
+import { GenerationSpec } from "../types/generation.js";
 
 export interface WorkspacePaths {
   root: string;
@@ -197,6 +199,10 @@ export class WorkspaceManager {
 
   public async readPrompt(promptPath: string): Promise<string> {
     return fs.readFile(promptPath, "utf8");
+  }
+
+  public async loadGenerationSpec(): Promise<GenerationSpec> {
+    return loadGeneration(this.paths.generationPath);
   }
 
   private async createSandboxSkillLinks(

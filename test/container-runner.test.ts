@@ -23,7 +23,8 @@ describe("container runner", () => {
         containerRoot: "/tmp/project",
         targetPath: "/tmp/project/steps/0/baseline",
         prompt: "Generate",
-        label: "Baseline generation"
+        label: "Baseline generation",
+        harness: "claude"
       },
       {
         CLAUDE_CODE_OAUTH_TOKEN: "secret"
@@ -53,7 +54,8 @@ describe("container runner", () => {
         containerRoot: "/tmp/project",
         targetPath: "/tmp/project/steps/0/baseline",
         prompt: "Generate",
-        label: "Baseline generation"
+        label: "Baseline generation",
+        harness: "claude"
       },
       {}
     );
@@ -79,7 +81,8 @@ describe("container runner", () => {
         containerRoot: "/tmp/project/steps/0/baseline",
         targetPath: "/tmp/project/steps/0/baseline",
         prompt: "Generate",
-        label: "Baseline generation"
+        label: "Baseline generation",
+        harness: "claude"
       },
       {}
     );
@@ -98,6 +101,40 @@ describe("container runner", () => {
     ]);
   });
 
+  it("uses codex exec with writable sandboxing when codex is selected", () => {
+    const args = buildContainerExecArgs(
+      "/tmp/container.js",
+      {
+        containerRoot: "/tmp/project",
+        targetPath: "/tmp/project/steps/0/baseline",
+        prompt: "Generate",
+        label: "Baseline generation",
+        harness: "codex"
+      },
+      {
+        OPENAI_API_KEY: "secret",
+        OPENAI_PROJECT_ID: "project"
+      }
+    );
+
+    expect(args).toEqual([
+      "/tmp/container.js",
+      "exec",
+      "--env",
+      "OPENAI_API_KEY",
+      "--env",
+      "OPENAI_PROJECT_ID",
+      "/tmp/project",
+      "--",
+      "bash",
+      "-lc",
+      'cd "$1" && codex exec --skip-git-repo-check -a never --sandbox workspace-write "$2"',
+      "bash",
+      "steps/0/baseline",
+      "Generate"
+    ]);
+  });
+
   it("fails when the target path is outside the workspace", () => {
     expect(() =>
       buildContainerExecArgs(
@@ -106,7 +143,8 @@ describe("container runner", () => {
           containerRoot: "/tmp/project",
           targetPath: "/tmp/elsewhere",
           prompt: "Generate",
-          label: "Baseline generation"
+          label: "Baseline generation",
+          harness: "claude"
         },
         {}
       )

@@ -139,7 +139,7 @@ export function selectBestWinningCandidate(
 
 export function loadWorkspaceEnv(
   envPath: string,
-  options: { scoringProvider: ScoringProvider }
+  options: { scoringProvider?: ScoringProvider } = {}
 ): void {
   if (fs.existsSync(envPath)) {
     dotenv.config({ path: envPath, override: true });

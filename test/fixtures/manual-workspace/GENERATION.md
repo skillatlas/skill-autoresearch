@@ -1,3 +1,7 @@
+---
+harness: claude
+---
+
 Generate the current artifact set.
 
 Read `skills/demo/SKILL.md`, extract the integer from `version=<n>`, and write a single file named `index.html` in the current target directory.
