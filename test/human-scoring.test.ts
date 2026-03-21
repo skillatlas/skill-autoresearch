@@ -96,15 +96,19 @@ describe("LocalHumanReviewService", () => {
     expect(shellHtml).toContain('id="incumbent-preview" hidden');
     expect(shellHtml).toContain('id="candidate-preview" hidden');
     expect(shellHtml).toContain('id="status" hidden');
+    expect(shellHtml).toContain('id="queue-step"');
+    expect(shellHtml).toContain('queueStep.textContent = "Current step · " + session.phaseLabel;');
 
     const sessionResponse = await fetch(`${baseUrl}/api/session`);
     const session = (await sessionResponse.json()) as {
+      phaseLabel: string;
       current: {
         attempt: number;
         candidateIndex: number;
         incumbentUrl: string;
       };
     };
+    expect(session.phaseLabel).toBe("Step 1 · Scoring");
     const artifactResponse = await fetch(session.current.incumbentUrl);
     const artifactHtml = await artifactResponse.text();
     expect(artifactResponse.ok).toBe(true);
