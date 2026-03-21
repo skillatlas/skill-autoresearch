@@ -178,6 +178,8 @@ You are a design critic evaluating two HTML pages. Score them on visual identity
 | `commands[].command` | Shell command to produce evidence, or a built-in rubric helper such as `capture-screenshot` (optional — omit to read the file directly) |
 | `commands[].resultPath` | Path to the evidence file. `$STEP_PATH` is replaced at runtime. |
 
+Rubric commands also receive `$RUBRIC_RUN_ID`, a unique identifier for that evidence-collection pass. Use it for tool-specific session names when commands may run concurrently, for example `playwright-cli -s="$RUBRIC_RUN_ID" ...`.
+
 ### `skills/<name>/SKILL.md`
 
 The skill file that gets iteratively improved. You can have multiple skill folders — each must contain a `SKILL.md`. This is the file the mutate phase edits.

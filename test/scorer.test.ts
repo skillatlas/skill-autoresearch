@@ -328,6 +328,327 @@ if (command === "screenshot") {
     }
   });
 
+  it("provides RUBRIC_RUN_ID to custom rubric commands", async () => {
+    const workspaceParent = await fs.mkdtemp(path.join(os.tmpdir(), "scorer-"));
+    const workspaceRoot = path.join(workspaceParent, "workspace");
+    const stepPath = "step";
+    const absoluteStepPath = path.join(workspaceRoot, stepPath);
+    await fs.ensureDir(absoluteStepPath);
+    await fs.writeFile(
+      path.join(absoluteStepPath, "index.html"),
+      "<!doctype html><html><body><main>hello</main></body></html>",
+      "utf8"
+    );
+
+    const fakeBinDir = path.join(workspaceParent, "bin");
+    const logPath = path.join(workspaceParent, "playwright.log");
+    await fs.ensureDir(fakeBinDir);
+    await fs.writeFile(
+      path.join(fakeBinDir, "playwright-cli"),
+      `#!/usr/bin/env node
+import fs from "node:fs";
+import path from "node:path";
+
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.PLAYWRIGHT_CLI_LOG_PATH, \`\${JSON.stringify(args)}\\n\`);
+
+const commandIndex = args[0]?.startsWith("-s=") ? 1 : 0;
+const command = args[commandIndex];
+
+if (command === "screenshot") {
+  const filenameIndex = args.indexOf("--filename");
+  if (filenameIndex === -1 || !args[filenameIndex + 1]) {
+    console.error("missing --filename");
+    process.exit(2);
+  }
+
+  fs.mkdirSync(path.dirname(args[filenameIndex + 1]), { recursive: true });
+  fs.writeFileSync(
+    args[filenameIndex + 1],
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+  );
+}
+`,
+      "utf8"
+    );
+    await fs.chmod(path.join(fakeBinDir, "playwright-cli"), 0o755);
+
+    const scorer = new Scorer(
+      workspaceRoot,
+      new Logger(false),
+      {
+        openrouter: {
+          async generateVote() {
+            throw new Error("generateVote should not be called in this test");
+          }
+        },
+        codex: {
+          async generateVote() {
+            throw new Error("generateVote should not be called in this test");
+          }
+        }
+      },
+      false
+    );
+
+    const previousPath = process.env.PATH;
+    const previousLogPath = process.env.PLAYWRIGHT_CLI_LOG_PATH;
+    process.env.PATH = `${fakeBinDir}${path.delimiter}${previousPath ?? ""}`;
+    process.env.PLAYWRIGHT_CLI_LOG_PATH = logPath;
+
+    try {
+      const evidence = await scorer.collectEvidence(
+        {
+          sourcePath: "RUBRIC.md",
+          provider: "openrouter",
+          modelId: "test-model",
+          httpServerPort: 0,
+          commands: [
+            {
+              outputType: "image",
+              command:
+                'playwright-cli -s="$RUBRIC_RUN_ID" open "$STEP_ORIGIN/index.html" && playwright-cli -s="$RUBRIC_RUN_ID" resize 1440 1080 && playwright-cli -s="$RUBRIC_RUN_ID" screenshot --filename "$STEP_PATH/index.png" && playwright-cli -s="$RUBRIC_RUN_ID" close',
+              resultPath: "$STEP_PATH/index.png"
+            }
+          ],
+          prompt: "Judge screenshots."
+        },
+        stepPath
+      );
+
+      expect(evidence).toHaveLength(1);
+      expect(evidence[0]).toMatchObject({
+        outputType: "image",
+        label: "evidence-1",
+        path: path.join(absoluteStepPath, "index.png"),
+        mimeType: "image/png"
+      });
+
+      const commandLog = (await fs.readFile(logPath, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as string[]);
+      expect(commandLog).toHaveLength(4);
+      const sessionFlag = commandLog[0]?.[0];
+      expect(sessionFlag).toMatch(/^-s=rubric-/);
+      expect(commandLog[0]).toEqual([
+        sessionFlag,
+        "open",
+        expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/index\.html$/)
+      ]);
+      expect(commandLog[1]).toEqual([sessionFlag, "resize", "1440", "1080"]);
+      expect(commandLog[2]).toEqual([
+        sessionFlag,
+        "screenshot",
+        "--filename",
+        path.join(absoluteStepPath, "index.png")
+      ]);
+      expect(commandLog[3]).toEqual([sessionFlag, "close"]);
+    } finally {
+      process.env.PATH = previousPath;
+      if (previousLogPath == null) {
+        delete process.env.PLAYWRIGHT_CLI_LOG_PATH;
+      } else {
+        process.env.PLAYWRIGHT_CLI_LOG_PATH = previousLogPath;
+      }
+    }
+  });
+
+  it("serializes concurrent screenshot capture sessions", async () => {
+    const workspaceParent = await fs.mkdtemp(path.join(os.tmpdir(), "scorer-"));
+    const workspaceRoot = path.join(workspaceParent, "workspace");
+    const stepAPath = "step-a";
+    const stepBPath = "step-b";
+    const absoluteStepAPath = path.join(workspaceRoot, stepAPath);
+    const absoluteStepBPath = path.join(workspaceRoot, stepBPath);
+    await fs.ensureDir(absoluteStepAPath);
+    await fs.ensureDir(absoluteStepBPath);
+    await fs.writeFile(
+      path.join(absoluteStepAPath, "index.html"),
+      "<!doctype html><html><body><main>a</main></body></html>",
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(absoluteStepBPath, "index.html"),
+      "<!doctype html><html><body><main>b</main></body></html>",
+      "utf8"
+    );
+
+    const fakeBinDir = path.join(workspaceParent, "bin");
+    const lockPath = path.join(workspaceParent, "playwright.lock");
+    const logPath = path.join(workspaceParent, "playwright.log");
+    await fs.ensureDir(fakeBinDir);
+    await fs.writeFile(
+      path.join(fakeBinDir, "playwright-cli"),
+      `#!/usr/bin/env node
+import fs from "node:fs";
+import path from "node:path";
+
+const args = process.argv.slice(2);
+const sessionFlag = args[0]?.startsWith("-s=") ? args[0] : undefined;
+const sessionId = sessionFlag ? sessionFlag.slice(3) : "default";
+const commandIndex = sessionFlag ? 1 : 0;
+const command = args[commandIndex];
+const lockPath = process.env.PLAYWRIGHT_CLI_LOCK_PATH;
+const logPath = process.env.PLAYWRIGHT_CLI_LOG_PATH;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const log = (entry) => fs.appendFileSync(logPath, JSON.stringify(entry) + "\\n");
+
+log({ sessionId, command });
+
+if (command === "open") {
+  const activeSession = fs.existsSync(lockPath)
+    ? fs.readFileSync(lockPath, "utf8")
+    : "";
+  if (activeSession && activeSession !== sessionId) {
+    console.error("browserType.launch: Timeout 180000ms exceeded.");
+    console.error("Address already in use (48)");
+    console.error("Cannot start http server for devtools.");
+    process.exit(1);
+  }
+
+  fs.writeFileSync(lockPath, sessionId, "utf8");
+  await sleep(150);
+}
+
+if (command === "screenshot") {
+  const filenameIndex = args.indexOf("--filename");
+  if (filenameIndex === -1 || !args[filenameIndex + 1]) {
+    console.error("missing --filename");
+    process.exit(2);
+  }
+
+  fs.mkdirSync(path.dirname(args[filenameIndex + 1]), { recursive: true });
+  fs.writeFileSync(
+    args[filenameIndex + 1],
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+  );
+}
+
+if (command === "close") {
+  const activeSession = fs.existsSync(lockPath)
+    ? fs.readFileSync(lockPath, "utf8")
+    : "";
+  if (activeSession === sessionId) {
+    fs.rmSync(lockPath);
+  }
+}
+`,
+      "utf8"
+    );
+    await fs.chmod(path.join(fakeBinDir, "playwright-cli"), 0o755);
+
+    const scorer = new Scorer(
+      workspaceRoot,
+      new Logger(false),
+      {
+        openrouter: {
+          async generateVote() {
+            throw new Error("generateVote should not be called in this test");
+          }
+        },
+        codex: {
+          async generateVote() {
+            throw new Error("generateVote should not be called in this test");
+          }
+        }
+      },
+      false
+    );
+
+    const previousPath = process.env.PATH;
+    const previousLogPath = process.env.PLAYWRIGHT_CLI_LOG_PATH;
+    const previousLockPath = process.env.PLAYWRIGHT_CLI_LOCK_PATH;
+    process.env.PATH = `${fakeBinDir}${path.delimiter}${previousPath ?? ""}`;
+    process.env.PLAYWRIGHT_CLI_LOG_PATH = logPath;
+    process.env.PLAYWRIGHT_CLI_LOCK_PATH = lockPath;
+
+    try {
+      const [evidenceA, evidenceB] = await Promise.all([
+        scorer.collectEvidence(
+          {
+            sourcePath: "RUBRIC.md",
+            provider: "openrouter",
+            modelId: "test-model",
+            httpServerPort: 0,
+            commands: [
+              {
+                outputType: "image",
+                command:
+                  'capture-screenshot "$STEP_ORIGIN/index.html" "$STEP_PATH/index.png"',
+                resultPath: "$STEP_PATH/index.png"
+              }
+            ],
+            prompt: "Judge screenshots."
+          },
+          stepAPath
+        ),
+        scorer.collectEvidence(
+          {
+            sourcePath: "RUBRIC.md",
+            provider: "openrouter",
+            modelId: "test-model",
+            httpServerPort: 0,
+            commands: [
+              {
+                outputType: "image",
+                command:
+                  'capture-screenshot "$STEP_ORIGIN/index.html" "$STEP_PATH/index.png"',
+                resultPath: "$STEP_PATH/index.png"
+              }
+            ],
+            prompt: "Judge screenshots."
+          },
+          stepBPath
+        )
+      ]);
+
+      expect(evidenceA[0]).toMatchObject({
+        outputType: "image",
+        path: path.join(absoluteStepAPath, "index.png")
+      });
+      expect(evidenceB[0]).toMatchObject({
+        outputType: "image",
+        path: path.join(absoluteStepBPath, "index.png")
+      });
+
+      const commandLog = (await fs.readFile(logPath, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { sessionId: string; command: string });
+      expect(commandLog).toHaveLength(8);
+      const firstSessionId = commandLog[0]?.sessionId;
+      const secondSessionId = commandLog.find(
+        (entry) => entry.sessionId !== firstSessionId
+      )?.sessionId;
+      expect(firstSessionId).toBeDefined();
+      expect(secondSessionId).toBeDefined();
+      expect(commandLog.map((entry) => `${entry.sessionId}:${entry.command}`)).toEqual([
+        `${firstSessionId}:open`,
+        `${firstSessionId}:resize`,
+        `${firstSessionId}:screenshot`,
+        `${firstSessionId}:close`,
+        `${secondSessionId}:open`,
+        `${secondSessionId}:resize`,
+        `${secondSessionId}:screenshot`,
+        `${secondSessionId}:close`
+      ]);
+    } finally {
+      process.env.PATH = previousPath;
+      if (previousLogPath == null) {
+        delete process.env.PLAYWRIGHT_CLI_LOG_PATH;
+      } else {
+        process.env.PLAYWRIGHT_CLI_LOG_PATH = previousLogPath;
+      }
+      if (previousLockPath == null) {
+        delete process.env.PLAYWRIGHT_CLI_LOCK_PATH;
+      } else {
+        process.env.PLAYWRIGHT_CLI_LOCK_PATH = previousLockPath;
+      }
+    }
+  });
+
   it("builds a mixed OpenRouter evidence message", () => {
     const imageBytes = Buffer.from("image");
     const message = (new OpenRouterVoteJudge(new Logger(false)) as any).buildEvidenceMessage(
