@@ -202,7 +202,7 @@ describe("scoring helpers", () => {
     });
   });
 
-  it("captures HTML screenshots for legacy playwright rubric commands", async () => {
+  it("provides STEP_ORIGIN when `http_server` is enabled", async () => {
     const workspaceParent = await fs.mkdtemp(path.join(os.tmpdir(), "scorer-"));
     const workspaceRoot = path.join(workspaceParent, "workspace with space");
     const stepPath = "step with space";
@@ -276,11 +276,12 @@ if (command === "screenshot") {
           sourcePath: "RUBRIC.md",
           provider: "openrouter",
           modelId: "test-model",
+          httpServerPort: 0,
           commands: [
             {
               outputType: "image",
               command:
-                'playwright-cli screenshot "$STEP_PATH/index.html" "$STEP_PATH/index.png"',
+                'playwright-cli open "$STEP_ORIGIN/index.html" && playwright-cli resize 1440 1080 && playwright-cli screenshot --filename "$STEP_PATH/index.png" && playwright-cli close',
               resultPath: "$STEP_PATH/index.png"
             }
           ],
@@ -302,21 +303,17 @@ if (command === "screenshot") {
         .split("\n")
         .map((line) => JSON.parse(line) as string[]);
       expect(commandLog).toHaveLength(4);
-      expect(commandLog[0]?.[1]).toBe("open");
-      expect(commandLog[0]?.[2]).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/index\.html$/);
-      expect(commandLog[1]).toEqual([
-        expect.stringMatching(/^-s=/),
-        "resize",
-        "1440",
-        "1080"
+      expect(commandLog[0]).toEqual([
+        "open",
+        expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/index\.html$/)
       ]);
+      expect(commandLog[1]).toEqual(["resize", "1440", "1080"]);
       expect(commandLog[2]).toEqual([
-        expect.stringMatching(/^-s=/),
         "screenshot",
         "--filename",
         path.join(absoluteStepPath, "index.png")
       ]);
-      expect(commandLog[3]?.[1]).toBe("close");
+      expect(commandLog[3]).toEqual(["close"]);
     } finally {
       process.env.PATH = previousPath;
       if (previousLogPath == null) {

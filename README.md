@@ -154,11 +154,12 @@ Defines how generated artifacts are scored. Uses YAML frontmatter for configurat
 ---
 provider: openrouter
 model: google/gemini-3-flash-preview
+http_server: true
 commands:
   - outputType: text
     resultPath: "$STEP_PATH/index.html"
   - outputType: image
-    command: playwright-cli screenshot "$STEP_PATH/index.html" "$STEP_PATH/index.png"
+    command: playwright-cli open "$STEP_ORIGIN/index.html" && playwright-cli resize 1440 1080 && playwright-cli screenshot --filename "$STEP_PATH/index.png" && playwright-cli close
     resultPath: "$STEP_PATH/index.png"
 ---
 
@@ -171,6 +172,7 @@ You are a design critic evaluating two HTML pages. Score them on visual identity
 |---|---|
 | `provider` | `openrouter` or `codex` |
 | `model` | Model ID for scoring (e.g. `google/gemini-3-flash-preview`) |
+| `http_server` | Optional. `true` starts an ephemeral local server for the step directory; a number uses that exact port. Exposes `$STEP_ORIGIN` to rubric commands. |
 | `commands` | Array of evidence-collection steps |
 | `commands[].outputType` | `text` or `image` |
 | `commands[].command` | Shell command to produce evidence (optional — omit to read the file directly) |
