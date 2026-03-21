@@ -100,9 +100,16 @@ export class Orchestrator {
     }
 
     let state: RunState | undefined;
+    let humanRunStarted = false;
 
     try {
       state = await this.initializeState();
+
+      if (this.options.scoringMode === "human" && state.status !== "completed") {
+        await this.humanReview.startRun(state);
+        this.humanReview.syncState(state);
+        humanRunStarted = true;
+      }
 
       if (state.status === "completed") {
         this.logger.info(`Run ${state.runId} is already completed.`);
@@ -149,6 +156,10 @@ export class Orchestrator {
       }
 
       throw error;
+    } finally {
+      if (humanRunStarted) {
+        await this.humanReview.close();
+      }
     }
   }
 
@@ -521,11 +532,15 @@ export class Orchestrator {
   }
 
   private async saveState(state: RunState): Promise<void> {
+    const snapshot = structuredClone(state);
     const saveOperation = this.pendingStateSave.then(() =>
-      this.stateStore.save(structuredClone(state))
+      this.stateStore.save(snapshot)
     );
     this.pendingStateSave = saveOperation.catch(() => undefined);
     await saveOperation;
+    if (this.options.scoringMode === "human") {
+      this.humanReview.syncState(snapshot);
+    }
   }
 
   private recordCandidateVote(

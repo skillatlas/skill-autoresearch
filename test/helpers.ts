@@ -230,6 +230,12 @@ export class FakeHumanReviewService implements HumanReviewService {
     private readonly decisions: Record<string, "A" | "B"> = {}
   ) {}
 
+  public async startRun(): Promise<void> {}
+
+  public syncState(): void {}
+
+  public async close(): Promise<void> {}
+
   public async reviewCandidates(
     input: Parameters<HumanReviewService["reviewCandidates"]>[0]
   ): Promise<void> {

@@ -6,6 +6,7 @@ import { URL } from "node:url";
 
 import { Logger } from "./logger.js";
 import { ScoreVote } from "../types/rubric.js";
+import { RunState } from "../types/state.js";
 
 export interface HumanReviewCandidate {
   index: number;
@@ -22,12 +23,15 @@ export interface HumanReviewInput {
   onVote(input: { candidateIndex: number; vote: ScoreVote }): Promise<void>;
 }
 
-export interface HumanReviewService {
-  reviewCandidates(input: HumanReviewInput): Promise<void>;
-}
-
 export interface BrowserOpener {
   open(url: string): Promise<void>;
+}
+
+export interface HumanReviewService {
+  startRun(state: RunState): Promise<void>;
+  syncState(state: RunState): void;
+  reviewCandidates(input: HumanReviewInput): Promise<void>;
+  close(): Promise<void>;
 }
 
 interface ReviewItem {
@@ -36,8 +40,26 @@ interface ReviewItem {
 }
 
 interface ArtifactRef {
-  id: string;
   label: string;
+  path: string;
+}
+
+interface ReviewSession {
+  input: HumanReviewInput;
+  queue: ReviewItem[];
+  activeIndex: number;
+  candidateByIndex: Map<number, HumanReviewCandidate>;
+  candidateProgress: Map<number, number>;
+  artifacts: Map<string, ArtifactRef>;
+  resolve: () => void;
+  reject: (error: unknown) => void;
+}
+
+interface SessionCandidate {
+  index: number;
+  completedVotes: number;
+  totalVotes: number;
+  status: string;
   path: string;
 }
 
@@ -172,13 +194,88 @@ class SystemBrowserOpener implements BrowserOpener {
 }
 
 export class LocalHumanReviewService implements HumanReviewService {
+  private server?: Server;
+  private baseUrl?: string;
+  private latestState?: RunState;
+  private activeReview?: ReviewSession;
+  private readonly eventClients = new Set<ServerResponse>();
+
   public constructor(
     private readonly logger: Logger,
     private readonly browserOpener: BrowserOpener = new SystemBrowserOpener()
   ) {}
 
+  public async startRun(state: RunState): Promise<void> {
+    this.latestState = structuredClone(state);
+    if (this.server) {
+      this.broadcastSession();
+      return;
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const finish = (error?: unknown) => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve();
+      };
+
+      this.server = createServer((request, response) => {
+        void this.handleRequest(request, response).catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          response.writeHead(500, {
+            "content-type": "text/plain; charset=utf-8"
+          });
+          response.end(`${message}\n`);
+        });
+      });
+
+      this.server.on("error", (error) => {
+        finish(error);
+      });
+
+      this.server.listen(0, "127.0.0.1", () => {
+        const address = this.server?.address();
+        if (!address || typeof address === "string") {
+          finish(new Error("Failed to determine local review server address."));
+          return;
+        }
+
+        this.baseUrl = `http://127.0.0.1:${address.port}`;
+        this.logger.phase(`Human scoring ready at ${this.baseUrl}`);
+        void this.browserOpener
+          .open(this.baseUrl)
+          .then(() => {
+            this.logger.info(`Opened human scoring in the default browser: ${this.baseUrl}`);
+            this.broadcastSession();
+            finish();
+          })
+          .catch((error: unknown) => {
+            finish(error);
+          });
+      });
+    });
+  }
+
+  public syncState(state: RunState): void {
+    this.latestState = structuredClone(state);
+    this.broadcastSession();
+  }
+
   public async reviewCandidates(input: HumanReviewInput): Promise<void> {
-    const reviewQueue = input.candidates.flatMap((candidate) =>
+    if (!this.server) {
+      throw new Error("Human review server has not been started.");
+    }
+
+    const queue = input.candidates.flatMap((candidate) =>
       Array.from(
         { length: Math.max(0, input.voteCount - candidate.completedVotes) },
         (_, offset) => ({
@@ -188,7 +285,7 @@ export class LocalHumanReviewService implements HumanReviewService {
       )
     );
 
-    if (reviewQueue.length === 0) {
+    if (queue.length === 0) {
       return;
     }
 
@@ -198,256 +295,518 @@ export class LocalHumanReviewService implements HumanReviewService {
     const candidateProgress = new Map(
       input.candidates.map((candidate) => [candidate.index, candidate.completedVotes])
     );
-    const artifactEntries: Array<[string, ArtifactRef]> = [
-      [
-        "incumbent",
+    const artifacts = new Map<string, ArtifactRef>([
+      ["incumbent", { label: "Incumbent", path: input.incumbentPath }],
+      ...input.candidates.map((candidate): [string, ArtifactRef] => [
+        `candidate-${candidate.index}`,
         {
-          id: "incumbent",
-          label: "Incumbent",
-          path: input.incumbentPath
+          label: `Candidate ${candidate.index}`,
+          path: candidate.path
         }
-      ],
-      ...input.candidates.map(
-        (candidate): [string, ArtifactRef] => [
-          `candidate-${candidate.index}`,
-          {
-            id: `candidate-${candidate.index}`,
-            label: `Candidate ${candidate.index}`,
-            path: candidate.path
-          }
-        ]
-      )
-    ];
-    const artifacts = new Map<string, ArtifactRef>(artifactEntries);
-
-    let activeIndex = 0;
-    let server: Server | undefined;
-    let baseUrl = "";
+      ])
+    ]);
 
     await new Promise<void>((resolve, reject) => {
-      let settled = false;
-
-      const finish = (error?: unknown) => {
-        if (settled) {
-          return;
-        }
-
-        settled = true;
-        if (!server) {
-          if (error) {
-            reject(error);
-          } else {
-            resolve();
-          }
-          return;
-        }
-
-        server.close(() => {
-          if (error) {
-            reject(error);
-            return;
-          }
-
-          resolve();
-        });
+      this.activeReview = {
+        input,
+        queue,
+        activeIndex: 0,
+        candidateByIndex,
+        candidateProgress,
+        artifacts,
+        resolve,
+        reject
       };
+      this.broadcastSession();
+      this.logPendingComparison();
+    });
+  }
 
-      const buildSessionPayload = () => {
-        const currentItem = reviewQueue[activeIndex];
-        const currentCandidate =
-          currentItem == null
-            ? undefined
-            : candidateByIndex.get(currentItem.candidateIndex);
+  public async close(): Promise<void> {
+    const currentReview = this.activeReview;
+    this.activeReview = undefined;
+    if (currentReview) {
+      currentReview.reject(new Error("Human review server closed before review completed."));
+    }
 
+    for (const client of this.eventClients) {
+      client.end();
+    }
+    this.eventClients.clear();
+
+    if (!this.server) {
+      return;
+    }
+
+    const server = this.server;
+    this.server = undefined;
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve();
+      });
+    });
+  }
+
+  private buildSessionPayload() {
+    const mode = this.getMode();
+    const phaseLabel = this.describePhase();
+    const summary = this.describeSummary(mode);
+    const progress = this.buildProgress(mode);
+    const candidates = this.buildCandidates();
+    const currentReview = this.buildCurrentReview();
+
+    return {
+      mode,
+      runId: this.latestState?.runId ?? null,
+      stepIndex: this.latestState?.stepIndex ?? 0,
+      phaseLabel,
+      summary,
+      voteCount:
+        this.activeReview?.input.voteCount ?? this.latestState?.voteCount ?? 0,
+      completedUnits: progress.completed,
+      totalUnits: progress.total,
+      current: currentReview,
+      candidates
+    };
+  }
+
+  private getMode(): "starting" | "running" | "review" | "completed" | "failed" {
+    if (!this.latestState) {
+      return "starting";
+    }
+    if (this.activeReview) {
+      return "review";
+    }
+    if (this.latestState.status === "completed") {
+      return "completed";
+    }
+    if (this.latestState.status === "failed") {
+      return "failed";
+    }
+
+    return "running";
+  }
+
+  private describePhase(): string {
+    const state = this.latestState;
+    if (!state) {
+      return "Starting run";
+    }
+
+    switch (state.currentPhase) {
+      case "generate-baseline":
+        return "Generating baseline";
+      case "snapshot":
+        return "Snapshotting skills";
+      case "mutate-skills":
+        return `Mutating skills for step ${state.stepIndex}`;
+      case "generate-candidates":
+        return `Generating candidates for step ${state.stepIndex}`;
+      case "score":
+        return `Scoring candidates for step ${state.stepIndex}`;
+      case "promote":
+        return `Promoting decision for step ${state.stepIndex}`;
+      default:
+        return "Running";
+    }
+  }
+
+  private describeSummary(mode: ReturnType<typeof this.getMode>): string {
+    const state = this.latestState;
+    if (!state) {
+      return "Preparing human scoring server.";
+    }
+
+    if (mode === "review" && this.activeReview) {
+      const current = this.activeReview.queue[this.activeReview.activeIndex];
+      if (!current) {
+        return "All human comparisons recorded. Finalizing this step.";
+      }
+
+      return `Review candidate ${current.candidateIndex}, vote ${current.attempt + 1} of ${this.activeReview.input.voteCount}.`;
+    }
+
+    if (mode === "completed") {
+      return `Run completed (${state.completedReason ?? "done"}).`;
+    }
+
+    if (mode === "failed") {
+      return "Run failed. Check the console log for the error.";
+    }
+
+    switch (state.currentPhase) {
+      case "generate-baseline":
+        return "Creating the baseline artifact from the current skills.";
+      case "snapshot":
+        return "Saving the current skills before the next mutation.";
+      case "mutate-skills":
+        return "Applying the mutation prompt to the live skills directory.";
+      case "generate-candidates":
+        return `Generated ${state.activeCandidates.filter((candidate) => candidate.status !== "pending").length}/${state.candidateCount} candidates for this step.`;
+      case "score":
+        return `Collected ${state.activeCandidates.reduce((sum, candidate) => sum + candidate.votes.length, 0)}/${state.activeCandidates.length * state.voteCount} human vote(s) so far.`;
+      case "promote":
+        return "Applying the accept or reject decision for this mutation step.";
+      default:
+        return "Running.";
+    }
+  }
+
+  private buildProgress(
+    mode: ReturnType<typeof this.getMode>
+  ): { completed: number; total: number } {
+    if (mode === "review" && this.activeReview) {
+      return {
+        completed: this.activeReview.activeIndex,
+        total: this.activeReview.queue.length
+      };
+    }
+
+    const state = this.latestState;
+    if (!state) {
+      return { completed: 0, total: 1 };
+    }
+
+    if (state.status === "completed") {
+      return { completed: 1, total: 1 };
+    }
+
+    switch (state.currentPhase) {
+      case "generate-candidates":
         return {
-          runId: input.runId,
-          stepIndex: input.stepIndex,
-          voteCount: input.voteCount,
-          done: currentItem == null,
-          totalComparisons: reviewQueue.length,
-          completedComparisons: activeIndex,
-          current:
-            currentItem && currentCandidate
-              ? {
-                  candidateIndex: currentItem.candidateIndex,
-                  attempt: currentItem.attempt,
-                  comparisonNumber: activeIndex + 1,
-                  completedVotes: candidateProgress.get(currentItem.candidateIndex) ?? 0,
-                  incumbentUrl: `${baseUrl}/artifact/incumbent/`,
-                  candidateUrl: `${baseUrl}/artifact/candidate-${currentItem.candidateIndex}/`,
-                  incumbentPath: input.incumbentPath,
-                  candidatePath: currentCandidate.path
-                }
-              : null,
-          candidates: input.candidates.map((candidate) => ({
-            index: candidate.index,
-            completedVotes: candidateProgress.get(candidate.index) ?? candidate.completedVotes,
-            totalVotes: input.voteCount,
-            path: candidate.path
-          }))
+          completed: state.activeCandidates.filter((candidate) => candidate.status !== "pending")
+            .length,
+          total: state.candidateCount
         };
-      };
+      case "score":
+        return {
+          completed: state.activeCandidates.reduce(
+            (sum, candidate) => sum + candidate.votes.length,
+            0
+          ),
+          total: Math.max(1, state.activeCandidates.length * state.voteCount)
+        };
+      case "generate-baseline":
+      case "snapshot":
+      case "mutate-skills":
+      case "promote":
+        return { completed: 0, total: 1 };
+      default:
+        return { completed: 0, total: 1 };
+    }
+  }
 
-      const logPendingComparison = () => {
-        const currentItem = reviewQueue[activeIndex];
-        if (!currentItem) {
-          return;
+  private buildCandidates(): SessionCandidate[] {
+    const state = this.latestState;
+    if (!state) {
+      return [];
+    }
+
+    return state.activeCandidates.map((candidate) => ({
+      index: candidate.index,
+      completedVotes:
+        this.activeReview?.candidateProgress.get(candidate.index) ?? candidate.votes.length,
+      totalVotes: state.voteCount,
+      status: candidate.status,
+      path: path.resolve(state.workspaceRoot, candidate.path)
+    }));
+  }
+
+  private buildCurrentReview() {
+    if (!this.activeReview || !this.baseUrl) {
+      return null;
+    }
+
+    const current = this.activeReview.queue[this.activeReview.activeIndex];
+    if (!current) {
+      return null;
+    }
+
+    const candidate = this.activeReview.candidateByIndex.get(current.candidateIndex);
+    if (!candidate) {
+      return null;
+    }
+
+    return {
+      candidateIndex: current.candidateIndex,
+      attempt: current.attempt,
+      comparisonNumber: this.activeReview.activeIndex + 1,
+      incumbentPath: this.activeReview.input.incumbentPath,
+      candidatePath: candidate.path,
+      incumbentUrl: `${this.baseUrl}/artifact/incumbent/`,
+      candidateUrl: `${this.baseUrl}/artifact/candidate-${current.candidateIndex}/`
+    };
+  }
+
+  private logPendingComparison(): void {
+    if (!this.activeReview) {
+      return;
+    }
+
+    const current = this.activeReview.queue[this.activeReview.activeIndex];
+    if (!current) {
+      return;
+    }
+
+    this.logger.info(
+      `Awaiting human review ${this.activeReview.activeIndex + 1}/${this.activeReview.queue.length}: candidate ${current.candidateIndex}, vote ${current.attempt + 1}/${this.activeReview.input.voteCount}.`
+    );
+  }
+
+  private broadcastSession(): void {
+    if (this.eventClients.size === 0) {
+      return;
+    }
+
+    const payload = JSON.stringify(this.buildSessionPayload());
+    for (const client of this.eventClients) {
+      client.write(`event: session\ndata: ${payload}\n\n`);
+    }
+  }
+
+  private async handleRequest(
+    request: IncomingMessage,
+    response: ServerResponse
+  ): Promise<void> {
+    if (!request.url) {
+      sendHtml(response, 400, "<h1>Missing request URL.</h1>");
+      return;
+    }
+
+    const url = new URL(request.url, "http://127.0.0.1");
+    const pathname = url.pathname;
+
+    if (pathname === "/favicon.ico") {
+      response.writeHead(204);
+      response.end();
+      return;
+    }
+
+    if (request.method === "GET" && pathname === "/") {
+      sendHtml(response, 200, this.renderAppHtml());
+      return;
+    }
+
+    if (request.method === "GET" && pathname === "/events") {
+      response.writeHead(200, {
+        "content-type": "text/event-stream",
+        "cache-control": "no-store",
+        connection: "keep-alive"
+      });
+      response.write(`event: session\ndata: ${JSON.stringify(this.buildSessionPayload())}\n\n`);
+      this.eventClients.add(response);
+      request.on("close", () => {
+        this.eventClients.delete(response);
+      });
+      return;
+    }
+
+    if (request.method === "GET" && pathname === "/api/session") {
+      sendJson(response, 200, this.buildSessionPayload());
+      return;
+    }
+
+    if (request.method === "POST" && pathname === "/api/vote") {
+      await this.handleVoteRequest(request, response);
+      return;
+    }
+
+    if (request.method === "GET" && pathname.startsWith("/artifact/")) {
+      const [, , artifactId, ...artifactPathSegments] = pathname.split("/");
+      await this.handleArtifactRequest(
+        response,
+        artifactId ?? "",
+        artifactPathSegments.join("/")
+      );
+      return;
+    }
+
+    sendHtml(response, 404, "<h1>Not found.</h1>");
+  }
+
+  private async handleVoteRequest(
+    request: IncomingMessage,
+    response: ServerResponse
+  ): Promise<void> {
+    if (!this.activeReview) {
+      sendJson(response, 409, { error: "No active human review is ready yet." });
+      return;
+    }
+
+    const current = this.activeReview.queue[this.activeReview.activeIndex];
+    if (!current) {
+      sendJson(response, 409, { error: "All human reviews are already complete." });
+      return;
+    }
+
+    const body = await readRequestBody(request);
+    const payload = JSON.parse(body) as {
+      candidateIndex?: number;
+      attempt?: number;
+      winner?: "A" | "B";
+    };
+
+    if (
+      payload.candidateIndex !== current.candidateIndex ||
+      payload.attempt !== current.attempt
+    ) {
+      sendJson(response, 409, {
+        error: "Review session advanced. Reload the page and try again."
+      });
+      return;
+    }
+
+    if (payload.winner !== "A" && payload.winner !== "B") {
+      sendJson(response, 400, {
+        error: 'Winner must be "A" or "B".'
+      });
+      return;
+    }
+
+    await this.activeReview.input.onVote({
+      candidateIndex: current.candidateIndex,
+      vote: {
+        winner: payload.winner,
+        confidence: 1,
+        rationale:
+          payload.winner === "A"
+            ? "Human reviewer selected the incumbent artifact."
+            : "Human reviewer selected the candidate artifact."
+      }
+    });
+
+    this.activeReview.candidateProgress.set(
+      current.candidateIndex,
+      (this.activeReview.candidateProgress.get(current.candidateIndex) ?? 0) + 1
+    );
+    this.activeReview.activeIndex += 1;
+    this.logger.info(
+      `Recorded human vote ${this.activeReview.activeIndex}/${this.activeReview.queue.length}: candidate ${current.candidateIndex} -> ${payload.winner}.`
+    );
+
+    const sessionPayload = this.buildSessionPayload();
+    sendJson(response, 200, sessionPayload);
+    this.broadcastSession();
+
+    const review = this.activeReview;
+    if (review.activeIndex >= review.queue.length) {
+      setImmediate(() => {
+        if (this.activeReview === review) {
+          this.activeReview = undefined;
+          review.resolve();
         }
+      });
+      return;
+    }
 
-        this.logger.info(
-          `Awaiting human review ${activeIndex + 1}/${reviewQueue.length}: candidate ${currentItem.candidateIndex}, vote ${currentItem.attempt + 1}/${input.voteCount}.`
-        );
-      };
+    this.logPendingComparison();
+  }
 
-      const handleArtifactRequest = async (
-        response: ServerResponse,
-        artifactId: string,
-        rawArtifactPath: string
-      ) => {
-        const artifact = artifacts.get(artifactId);
-        if (!artifact) {
-          sendHtml(response, 404, "<h1>Artifact not found.</h1>");
-          return;
-        }
+  private async handleArtifactRequest(
+    response: ServerResponse,
+    artifactId: string,
+    rawArtifactPath: string
+  ): Promise<void> {
+    const artifacts = this.activeReview?.artifacts;
+    const artifact = artifacts?.get(artifactId);
+    if (!artifact) {
+      sendHtml(response, 404, "<h1>Artifact not found.</h1>");
+      return;
+    }
 
-        const relativeArtifactPath = rawArtifactPath
-          .split("/")
-          .filter(Boolean)
-          .map((segment) => decodeURIComponent(segment))
-          .join(path.sep);
-        const resolvedPath = path.resolve(artifact.path, relativeArtifactPath || ".");
-        const relativeResolvedPath = path.relative(artifact.path, resolvedPath);
-        if (
-          relativeResolvedPath.startsWith("..") ||
-          path.isAbsolute(relativeResolvedPath)
-        ) {
-          sendHtml(response, 404, "<h1>Artifact not found.</h1>");
-          return;
-        }
+    const relativeArtifactPath = rawArtifactPath
+      .split("/")
+      .filter(Boolean)
+      .map((segment) => decodeURIComponent(segment))
+      .join(path.sep);
+    const resolvedPath = path.resolve(artifact.path, relativeArtifactPath || ".");
+    const relativeResolvedPath = path.relative(artifact.path, resolvedPath);
+    if (
+      relativeResolvedPath.startsWith("..") ||
+      path.isAbsolute(relativeResolvedPath)
+    ) {
+      sendHtml(response, 404, "<h1>Artifact not found.</h1>");
+      return;
+    }
 
-        if (!(await fs.pathExists(resolvedPath))) {
-          sendHtml(response, 404, "<h1>Artifact not found.</h1>");
-          return;
-        }
+    if (!(await fs.pathExists(resolvedPath))) {
+      sendHtml(response, 404, "<h1>Artifact not found.</h1>");
+      return;
+    }
 
-        const stats = await fs.stat(resolvedPath);
-        const artifactBasePath = `/artifact/${artifactId}/`;
+    const stats = await fs.stat(resolvedPath);
+    const artifactBasePath = `/artifact/${artifactId}/`;
 
-        if (stats.isDirectory()) {
-          const htmlIndexPath = ["index.html", "index.htm"]
-            .map((fileName) => path.join(resolvedPath, fileName))
-            .find((filePath) => fs.existsSync(filePath));
+    if (stats.isDirectory()) {
+      const htmlIndexPath = ["index.html", "index.htm"]
+        .map((fileName) => path.join(resolvedPath, fileName))
+        .find((filePath) => fs.existsSync(filePath));
 
-          if (htmlIndexPath) {
-            const html = await fs.readFile(htmlIndexPath, "utf8");
-            sendHtml(response, 200, rewriteHtml(html, artifactBasePath));
-            return;
-          }
+      if (htmlIndexPath) {
+        const html = await fs.readFile(htmlIndexPath, "utf8");
+        sendHtml(response, 200, rewriteHtml(html, artifactBasePath));
+        return;
+      }
 
-          const files = await listArtifactFiles(resolvedPath);
-          const body = files
-            .map(
-              (filePath) =>
-                `<li><a href="${artifactBasePath}${encodeURI(filePath)}" target="_blank" rel="noreferrer">${escapeHtml(
-                  filePath
-                )}</a></li>`
-            )
-            .join("");
-
-          sendHtml(
-            response,
-            200,
-            `<!doctype html>
+      const files = await listArtifactFiles(resolvedPath);
+      sendHtml(
+        response,
+        200,
+        `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>${escapeHtml(artifact.label)}</title>
     <style>
-      :root {
-        color-scheme: light;
-        --paper: #f5f0e8;
-        --ink: #1b1713;
-        --accent: #b43f28;
-        --line: rgba(27, 23, 19, 0.16);
-      }
-
       body {
         margin: 0;
         padding: 24px;
-        background:
-          radial-gradient(circle at top left, rgba(180, 63, 40, 0.12), transparent 32%),
-          var(--paper);
-        color: var(--ink);
+        background: #f5f0e8;
+        color: #1b1713;
         font-family: Georgia, "Times New Roman", serif;
       }
 
-      h1 {
-        margin: 0 0 8px;
-        font-size: clamp(28px, 4vw, 44px);
-        line-height: 1.08;
-      }
-
-      p {
-        margin: 0 0 20px;
-        max-width: 64ch;
-      }
-
-      ul {
-        margin: 0;
-        padding-left: 20px;
-      }
-
-      li + li {
-        margin-top: 8px;
-      }
-
       a {
-        color: var(--accent);
+        color: #b43f28;
       }
     </style>
   </head>
   <body>
     <h1>${escapeHtml(artifact.label)}</h1>
     <p>${escapeHtml(artifact.path)}</p>
-    <ul>${body || "<li>No files found.</li>"}</ul>
+    <ul>${files
+      .map(
+        (filePath) =>
+          `<li><a href="${artifactBasePath}${encodeURI(filePath)}" target="_blank" rel="noreferrer">${escapeHtml(
+            filePath
+          )}</a></li>`
+      )
+      .join("")}</ul>
   </body>
 </html>`
-          );
-          return;
-        }
+      );
+      return;
+    }
 
-        const mimeType = inferMimeType(resolvedPath);
-        if (mimeType.startsWith("text/html")) {
-          const html = await fs.readFile(resolvedPath, "utf8");
-          sendHtml(response, 200, rewriteHtml(html, artifactBasePath));
-          return;
-        }
+    const mimeType = inferMimeType(resolvedPath);
+    if (mimeType.startsWith("text/html")) {
+      const html = await fs.readFile(resolvedPath, "utf8");
+      sendHtml(response, 200, rewriteHtml(html, artifactBasePath));
+      return;
+    }
 
-        response.writeHead(200, { "content-type": mimeType });
-        fs.createReadStream(resolvedPath).pipe(response);
-      };
+    response.writeHead(200, { "content-type": mimeType });
+    fs.createReadStream(resolvedPath).pipe(response);
+  }
 
-      const requestHandler = async (request: IncomingMessage, response: ServerResponse) => {
-        if (!request.url) {
-          sendHtml(response, 400, "<h1>Missing request URL.</h1>");
-          return;
-        }
-
-        const url = new URL(request.url, "http://127.0.0.1");
-        const pathname = url.pathname;
-
-        if (pathname === "/favicon.ico") {
-          response.writeHead(204);
-          response.end();
-          return;
-        }
-
-        if (request.method === "GET" && pathname === "/") {
-          sendHtml(
-            response,
-            200,
-            `<!doctype html>
+  private renderAppHtml(): string {
+    return `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8">
@@ -531,12 +890,6 @@ export class LocalHumanReviewService implements HumanReviewService {
         line-height: 1.6;
       }
 
-      .queue-list {
-        margin: 16px 0 0;
-        padding: 0;
-        list-style: none;
-      }
-
       .progress-track {
         height: 10px;
         margin-top: 16px;
@@ -548,6 +901,12 @@ export class LocalHumanReviewService implements HumanReviewService {
         height: 100%;
         background: linear-gradient(90deg, var(--accent), var(--accent-strong));
         transition: width 180ms ease-out;
+      }
+
+      .queue-list {
+        margin: 16px 0 0;
+        padding: 0;
+        list-style: none;
       }
 
       .queue-list li + li {
@@ -654,15 +1013,15 @@ export class LocalHumanReviewService implements HumanReviewService {
         color: var(--ink);
       }
 
-      button:hover,
-      .link-button:hover {
-        transform: translateY(-1px);
+      button:disabled,
+      .link-button[aria-disabled="true"] {
+        opacity: 0.5;
+        cursor: not-allowed;
       }
 
-      button:focus-visible,
-      .link-button:focus-visible {
-        outline: 3px solid rgba(180, 63, 40, 0.35);
-        outline-offset: 2px;
+      button:hover:not(:disabled),
+      .link-button:hover:not([aria-disabled="true"]) {
+        transform: translateY(-1px);
       }
 
       .status {
@@ -681,13 +1040,6 @@ export class LocalHumanReviewService implements HumanReviewService {
           min-height: 320px;
         }
       }
-
-      @media (prefers-reduced-motion: reduce) {
-        button,
-        .link-button {
-          transition: none;
-        }
-      }
     </style>
   </head>
   <body>
@@ -696,11 +1048,11 @@ export class LocalHumanReviewService implements HumanReviewService {
         <div class="masthead">
           <p class="eyebrow">Human scoring</p>
           <h1>Pick the stronger artifact.</h1>
-          <p class="subhead">Each submission is written straight into the run state, so you can stop and resume without losing already-reviewed comparisons.</p>
+          <p class="subhead">This page connects as soon as the CLI starts, tracks run progress live over SSE, and switches into side-by-side review as soon as a comparison is ready.</p>
         </div>
         <aside class="queue">
-          <p class="eyebrow">Queue</p>
-          <div id="queue-summary">Loading review queue…</div>
+          <p class="eyebrow">Progress</p>
+          <div id="queue-summary">Connecting…</div>
           <div class="progress-track" aria-hidden="true">
             <div class="progress-fill" id="progress-fill"></div>
           </div>
@@ -710,14 +1062,14 @@ export class LocalHumanReviewService implements HumanReviewService {
 
       <section class="controls">
         <div class="controls-copy">
-          <strong id="prompt-title">Loading comparison…</strong>
+          <strong id="prompt-title">Connecting…</strong>
           <span id="prompt-meta"></span>
         </div>
         <div class="actions">
-          <a class="link-button" id="open-incumbent" href="#" target="_blank" rel="noreferrer">Open incumbent</a>
-          <a class="link-button" id="open-candidate" href="#" target="_blank" rel="noreferrer">Open candidate</a>
-          <button id="vote-incumbent" type="button" data-winner="A" data-variant="secondary">Incumbent wins</button>
-          <button id="vote-candidate" type="button" data-winner="B">Candidate wins</button>
+          <a class="link-button" id="open-incumbent" href="#" target="_blank" rel="noreferrer" aria-disabled="true">Open incumbent</a>
+          <a class="link-button" id="open-candidate" href="#" target="_blank" rel="noreferrer" aria-disabled="true">Open candidate</a>
+          <button id="vote-incumbent" type="button" data-winner="A" data-variant="secondary" disabled>Incumbent wins</button>
+          <button id="vote-candidate" type="button" data-winner="B" disabled>Candidate wins</button>
         </div>
       </section>
 
@@ -756,75 +1108,79 @@ export class LocalHumanReviewService implements HumanReviewService {
       const openCandidate = document.getElementById("open-candidate");
       const status = document.getElementById("status");
       const voteButtons = Array.from(document.querySelectorAll("button[data-winner]"));
-
       let currentSession = null;
 
       function setVotingEnabled(enabled) {
         for (const button of voteButtons) {
           button.disabled = !enabled;
         }
+        openIncumbent.setAttribute("aria-disabled", enabled ? "false" : "true");
+        openCandidate.setAttribute("aria-disabled", enabled ? "false" : "true");
+      }
+
+      function clearFrames() {
+        incumbentPath.textContent = "";
+        candidatePath.textContent = "";
+        candidateLabel.textContent = "Candidate";
+        incumbentFrame.removeAttribute("src");
+        candidateFrame.removeAttribute("src");
+        openIncumbent.href = "#";
+        openCandidate.href = "#";
       }
 
       function render(session) {
         currentSession = session;
-        const progressRatio = session.totalComparisons === 0
-          ? 1
-          : session.completedComparisons / session.totalComparisons;
-        progressFill.style.width = (progressRatio * 100).toFixed(1) + "%";
-        queueSummary.textContent = session.done
-          ? "All comparisons submitted."
-          : "Comparison " + session.current.comparisonNumber + " of " + session.totalComparisons;
+        const ratio = session.totalUnits === 0 ? 0 : session.completedUnits / session.totalUnits;
+        progressFill.style.width = (ratio * 100).toFixed(1) + "%";
+        queueSummary.textContent = session.summary;
 
         queueList.innerHTML = "";
         for (const candidate of session.candidates) {
           const item = document.createElement("li");
           item.className = "queue-item";
           item.innerHTML =
-            "<span>Candidate " + candidate.index + "</span>" +
+            "<span>Candidate " + candidate.index + " · " + candidate.status + "</span>" +
             "<span>" + candidate.completedVotes + "/" + candidate.totalVotes + " vote(s)</span>";
           queueList.appendChild(item);
         }
 
-        if (session.done) {
-          promptTitle.textContent = "Review complete";
-          promptMeta.textContent = "You can close this tab.";
-          incumbentPath.textContent = "";
-          candidatePath.textContent = "";
-          candidateLabel.textContent = "Candidate";
-          incumbentFrame.removeAttribute("src");
-          candidateFrame.removeAttribute("src");
-          openIncumbent.href = "#";
-          openCandidate.href = "#";
-          status.textContent = "The local review server will stop after this submission completes.";
+        promptTitle.textContent = session.phaseLabel;
+        promptMeta.textContent = session.summary;
+
+        if (session.mode !== "review" || !session.current) {
+          clearFrames();
           setVotingEnabled(false);
+          status.textContent =
+            session.mode === "completed"
+              ? "Run completed."
+              : session.mode === "failed"
+                ? "Run failed."
+                : "Waiting for the next reviewable comparison.";
           return;
         }
 
-        promptTitle.textContent = "Step " + session.stepIndex + ", candidate " + session.current.candidateIndex;
-        promptMeta.textContent = "Vote " + (session.current.attempt + 1) + " of " + session.voteCount;
+        candidateLabel.textContent = "Candidate " + session.current.candidateIndex;
         incumbentPath.textContent = session.current.incumbentPath;
         candidatePath.textContent = session.current.candidatePath;
-        candidateLabel.textContent = "Candidate " + session.current.candidateIndex;
         incumbentFrame.src = session.current.incumbentUrl;
         candidateFrame.src = session.current.candidateUrl;
         openIncumbent.href = session.current.incumbentUrl;
         openCandidate.href = session.current.candidateUrl;
-        status.textContent = "Choose the stronger artifact for this comparison.";
         setVotingEnabled(true);
+        status.textContent = "Choose the stronger artifact for this comparison.";
       }
 
-      async function loadSession() {
+      async function loadInitialSession() {
         const response = await fetch("/api/session", { cache: "no-store" });
         if (!response.ok) {
           throw new Error("Failed to load review session.");
         }
 
-        const session = await response.json();
-        render(session);
+        render(await response.json());
       }
 
       async function submitVote(winner) {
-        if (!currentSession || currentSession.done) {
+        if (!currentSession || currentSession.mode !== "review" || !currentSession.current) {
           return;
         }
 
@@ -846,12 +1202,10 @@ export class LocalHumanReviewService implements HumanReviewService {
         if (!response.ok) {
           const errorText = await response.text();
           status.textContent = errorText || "Unable to record vote.";
-          setVotingEnabled(true);
           return;
         }
 
-        const session = await response.json();
-        render(session);
+        render(await response.json());
       }
 
       voteButtons.forEach((button) => {
@@ -860,135 +1214,19 @@ export class LocalHumanReviewService implements HumanReviewService {
         });
       });
 
-      loadSession().catch((error) => {
+      loadInitialSession().catch((error) => {
         status.textContent = error instanceof Error ? error.message : String(error);
-        setVotingEnabled(false);
       });
+
+      const stream = new EventSource("/events");
+      stream.addEventListener("session", (event) => {
+        render(JSON.parse(event.data));
+      });
+      stream.onerror = () => {
+        status.textContent = "Lost the live connection to the local server.";
+      };
     </script>
   </body>
-</html>`
-          );
-          return;
-        }
-
-        if (request.method === "GET" && pathname === "/api/session") {
-          sendJson(response, 200, buildSessionPayload());
-          return;
-        }
-
-        if (request.method === "POST" && pathname === "/api/vote") {
-          const currentItem = reviewQueue[activeIndex];
-          if (!currentItem) {
-            sendJson(response, 409, {
-              error: "All reviews are already complete."
-            });
-            return;
-          }
-
-          const body = await readRequestBody(request);
-          const payload = JSON.parse(body) as {
-            candidateIndex?: number;
-            attempt?: number;
-            winner?: "A" | "B";
-          };
-
-          if (
-            payload.candidateIndex !== currentItem.candidateIndex ||
-            payload.attempt !== currentItem.attempt
-          ) {
-            sendJson(response, 409, {
-              error: "Review session advanced. Reload the page and try again."
-            });
-            return;
-          }
-
-          if (payload.winner !== "A" && payload.winner !== "B") {
-            sendJson(response, 400, {
-              error: 'Winner must be "A" or "B".'
-            });
-            return;
-          }
-
-          await input.onVote({
-            candidateIndex: currentItem.candidateIndex,
-            vote: {
-              winner: payload.winner,
-              confidence: 1,
-              rationale:
-                payload.winner === "A"
-                  ? "Human reviewer selected the incumbent artifact."
-                  : "Human reviewer selected the candidate artifact."
-            }
-          });
-
-          candidateProgress.set(
-            currentItem.candidateIndex,
-            (candidateProgress.get(currentItem.candidateIndex) ?? 0) + 1
-          );
-          activeIndex += 1;
-
-          const sessionPayload = buildSessionPayload();
-          sendJson(response, 200, sessionPayload);
-
-          this.logger.info(
-            `Recorded human vote ${activeIndex}/${reviewQueue.length}: candidate ${currentItem.candidateIndex} -> ${payload.winner}.`
-          );
-          if (sessionPayload.done) {
-            setImmediate(() => finish());
-          } else {
-            logPendingComparison();
-          }
-          return;
-        }
-
-        if (request.method === "GET" && pathname.startsWith("/artifact/")) {
-          const [, , artifactId, ...artifactPathSegments] = pathname.split("/");
-          await handleArtifactRequest(
-            response,
-            artifactId ?? "",
-            artifactPathSegments.join("/")
-          );
-          return;
-        }
-
-        sendHtml(response, 404, "<h1>Not found.</h1>");
-      };
-
-      server = createServer((request, response) => {
-        void requestHandler(request, response).catch((error: unknown) => {
-          const message = error instanceof Error ? error.message : String(error);
-          response.writeHead(500, {
-            "content-type": "text/plain; charset=utf-8"
-          });
-          response.end(`${message}\n`);
-        });
-      });
-
-      server.on("error", (error) => {
-        finish(error);
-      });
-
-      server.listen(0, "127.0.0.1", () => {
-        const address = server?.address();
-        if (!address || typeof address === "string") {
-          finish(new Error("Failed to determine local review server address."));
-          return;
-        }
-
-        baseUrl = `http://127.0.0.1:${address.port}`;
-        this.logger.phase(
-          `Human scoring ready at ${baseUrl} (${reviewQueue.length} comparison(s))`
-        );
-        void this.browserOpener
-          .open(baseUrl)
-          .then(() => {
-            this.logger.info(`Opened human scoring in the default browser: ${baseUrl}`);
-            logPendingComparison();
-          })
-          .catch((error: unknown) => {
-            finish(error);
-          });
-      });
-    });
+</html>`;
   }
 }

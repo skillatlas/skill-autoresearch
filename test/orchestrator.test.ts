@@ -171,6 +171,34 @@ describe("orchestrator integration", () => {
     ).toBe(0);
   });
 
+  it("starts the human review server before baseline generation", async () => {
+    const workspaceRoot = await createWorkspaceCopy();
+    let reviewServerStarted = false;
+
+    await runOrchestrator({
+      workspaceRoot,
+      options: {
+        scoringMode: "human",
+        maxSteps: 0
+      },
+      containerRunner: {
+        async runPrompt(execution) {
+          expect(reviewServerStarted).toBe(true);
+          await new FakeContainerRunner(workspaceRoot).runPrompt(execution);
+        }
+      },
+      scorer: new FakeScorer(workspaceRoot),
+      humanReview: {
+        async startRun() {
+          reviewServerStarted = true;
+        },
+        syncState() {},
+        async reviewCandidates() {},
+        async close() {}
+      }
+    });
+  });
+
   it("archives old steps and promotes a step winner by candidate majority", async () => {
     const workspaceRoot = await createWorkspaceCopy();
     await fs.ensureDir(path.join(workspaceRoot, "steps", "old"));
@@ -436,6 +464,9 @@ describe("orchestrator integration", () => {
   it("resumes human scoring from the persisted vote count", async () => {
     const workspaceRoot = await createWorkspaceCopy();
     const partialHumanReview = {
+      async startRun() {},
+      syncState() {},
+      async close() {},
       async reviewCandidates(input: Parameters<FakeHumanReviewService["reviewCandidates"]>[0]) {
         await input.onVote({
           candidateIndex: 0,
