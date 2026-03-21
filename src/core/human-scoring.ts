@@ -63,90 +63,9 @@ interface SessionCandidate {
   path: string;
 }
 
-const ARTIFACT_HEIGHT_MESSAGE_TYPE = "skill-autoresearch:artifact-height";
 const PREVIEW_VIEWPORTS = [480, 960] as const;
 const DEFAULT_PREVIEW_VIEWPORT = 960;
-const MIN_PREVIEW_HEIGHT = 320;
 const DEFAULT_PREVIEW_HEIGHT = 420;
-
-function buildArtifactHeightBridgeScript(): string {
-  return String.raw`<script>
-    (() => {
-      let scheduled = false;
-      let lastViewportWidth = window.innerWidth;
-
-      const measureHeight = () => {
-        const root = document.documentElement;
-        const body = document.body;
-
-        return Math.max(
-          root ? root.scrollHeight : 0,
-          root ? root.offsetHeight : 0,
-          body ? body.scrollHeight : 0,
-          body ? body.offsetHeight : 0
-        );
-      };
-
-      const postHeight = () => {
-        scheduled = false;
-        window.parent.postMessage(
-          {
-            type: "${ARTIFACT_HEIGHT_MESSAGE_TYPE}",
-            height: measureHeight()
-          },
-          "*"
-        );
-      };
-
-      const schedulePost = () => {
-        if (scheduled) {
-          return;
-        }
-
-        scheduled = true;
-        window.requestAnimationFrame(postHeight);
-      };
-
-      window.addEventListener("load", () => {
-        lastViewportWidth = window.innerWidth;
-        schedulePost();
-      });
-      window.addEventListener("resize", () => {
-        if (window.innerWidth === lastViewportWidth) {
-          return;
-        }
-
-        lastViewportWidth = window.innerWidth;
-        schedulePost();
-      });
-      document.addEventListener("DOMContentLoaded", schedulePost);
-
-      if (typeof MutationObserver === "function" && document.documentElement) {
-        const mutationObserver = new MutationObserver(schedulePost);
-        mutationObserver.observe(document.documentElement, {
-          attributes: true,
-          characterData: true,
-          childList: true,
-          subtree: true
-        });
-      }
-
-      if (document.fonts && document.fonts.ready) {
-        document.fonts.ready.then(schedulePost).catch(() => {});
-      }
-
-      schedulePost();
-    })();
-  </script>`;
-}
-
-function injectScriptBeforeBodyClose(html: string, script: string): string {
-  if (/<\/body>/i.test(html)) {
-    return html.replace(/<\/body>/i, `${script}</body>`);
-  }
-
-  return `${html}${script}`;
-}
 
 function escapeHtml(value: string): string {
   return value
@@ -205,7 +124,7 @@ function rewriteHtml(html: string, basePath: string): string {
       ? rewrittenPaths.replace(/<head([^>]*)>/i, `<head$1><base href="${basePath}">`)
       : `<head><base href="${basePath}"></head>${rewrittenPaths}`;
 
-  return injectScriptBeforeBodyClose(withBase, buildArtifactHeightBridgeScript());
+  return withBase;
 }
 
 async function listArtifactFiles(rootPath: string): Promise<string[]> {
@@ -876,7 +795,6 @@ export class LocalHumanReviewService implements HumanReviewService {
     <h1>${escapeHtml(artifact.label)}</h1>
     <p>${escapeHtml(artifact.path)}</p>
     <ul>${body || "<li>No files found.</li>"}</ul>
-    ${buildArtifactHeightBridgeScript()}
   </body>
 </html>`
       );
@@ -1020,7 +938,8 @@ export class LocalHumanReviewService implements HumanReviewService {
 
       .panel {
         display: grid;
-        align-content: start;
+        grid-template-rows: auto auto minmax(0, 1fr);
+        min-height: 100vh;
       }
 
       .panel-header {
@@ -1063,6 +982,7 @@ export class LocalHumanReviewService implements HumanReviewService {
 
       .preview-shell {
         padding: 0 18px 18px;
+        min-height: 0;
       }
 
       .preview-shell[hidden] {
@@ -1072,7 +992,8 @@ export class LocalHumanReviewService implements HumanReviewService {
       .frame-wrap {
         position: relative;
         width: 100%;
-        min-height: ${MIN_PREVIEW_HEIGHT}px;
+        height: 100%;
+        min-height: ${DEFAULT_PREVIEW_HEIGHT}px;
         overflow: hidden;
         border: 1px solid var(--line);
         background:
@@ -1080,16 +1001,12 @@ export class LocalHumanReviewService implements HumanReviewService {
           #ffffff;
       }
 
-      .frame-wrap[data-scaled="true"] iframe {
-        position: absolute;
-        top: 0;
-      }
-
       iframe {
         display: block;
         border: 0;
         background: white;
         transform-origin: top left;
+        overflow: auto;
       }
 
       .controls {
@@ -1316,17 +1233,14 @@ export class LocalHumanReviewService implements HumanReviewService {
       const viewportButtons = Array.from(document.querySelectorAll("button[data-viewport]"));
 
       const VIEWPORT_STORAGE_KEY = "skill-autoresearch:human-scoring:viewport";
-      const FRAME_HEIGHT_MESSAGE_TYPE = "${ARTIFACT_HEIGHT_MESSAGE_TYPE}";
       const DEFAULT_VIEWPORT_WIDTH = ${DEFAULT_PREVIEW_VIEWPORT};
       const DEFAULT_FRAME_HEIGHT = ${DEFAULT_PREVIEW_HEIGHT};
-      const MIN_FRAME_HEIGHT = ${MIN_PREVIEW_HEIGHT};
       let currentSession = null;
       let viewportWidth = loadViewportWidth();
       const previewFrames = [
         { frame: incumbentFrame, wrap: incumbentWrap },
         { frame: candidateFrame, wrap: candidateWrap }
       ];
-      const frameState = new WeakMap();
 
       function normalizeViewportWidth(rawValue) {
         const value = Number(rawValue);
@@ -1349,59 +1263,11 @@ export class LocalHumanReviewService implements HumanReviewService {
         }
       }
 
-      function getFrameState(frame) {
-        let state = frameState.get(frame);
-        if (!state) {
-          state = {
-            cleanup: null,
-            contentHeight: DEFAULT_FRAME_HEIGHT
-          };
-          frameState.set(frame, state);
-        }
-
-        return state;
-      }
-
-      function cleanupFrameState(frame) {
-        const state = getFrameState(frame);
-        if (typeof state.cleanup === "function") {
-          state.cleanup();
-        }
-
-        state.cleanup = null;
-      }
-
       function updateViewportButtons() {
         for (const button of viewportButtons) {
           const pressed = Number(button.dataset.viewport) === viewportWidth;
           button.setAttribute("aria-pressed", pressed ? "true" : "false");
         }
-      }
-
-      function measureFrameHeight(frame) {
-        try {
-          const documentRoot = frame.contentDocument && frame.contentDocument.documentElement;
-          const documentBody = frame.contentDocument && frame.contentDocument.body;
-
-          return Math.max(
-            documentRoot ? documentRoot.scrollHeight : 0,
-            documentRoot ? documentRoot.offsetHeight : 0,
-            documentBody ? documentBody.scrollHeight : 0,
-            documentBody ? documentBody.offsetHeight : 0
-          );
-        } catch (_error) {
-          return 0;
-        }
-      }
-
-      function updateFrameHeight(frame, nextHeight) {
-        if (!Number.isFinite(nextHeight) || nextHeight <= 0) {
-          return;
-        }
-
-        const state = getFrameState(frame);
-        state.contentHeight = Math.max(MIN_FRAME_HEIGHT, Math.round(nextHeight));
-        layoutPreviewFrames();
       }
 
       function layoutPreviewFrame(preview) {
@@ -1410,19 +1276,19 @@ export class LocalHumanReviewService implements HumanReviewService {
         }
 
         const wrapWidth = preview.wrap.clientWidth;
-        if (wrapWidth === 0) {
+        const wrapHeight = preview.wrap.clientHeight;
+        if (wrapWidth === 0 || wrapHeight === 0) {
           return;
         }
 
-        const state = getFrameState(preview.frame);
-        const intrinsicHeight = Math.max(MIN_FRAME_HEIGHT, state.contentHeight || DEFAULT_FRAME_HEIGHT);
         const scale = Math.min(1, wrapWidth / viewportWidth);
+        const intrinsicHeight = Math.max(
+          DEFAULT_FRAME_HEIGHT,
+          Math.round(wrapHeight / Math.max(scale, 0.01))
+        );
         const scaledWidth = viewportWidth * scale;
-        const scaledHeight = intrinsicHeight * scale;
         const horizontalOffset = Math.max(0, Math.round((wrapWidth - scaledWidth) / 2));
 
-        preview.wrap.dataset.scaled = scale < 0.999 ? "true" : "false";
-        preview.wrap.style.height = Math.max(MIN_FRAME_HEIGHT, Math.round(scaledHeight)) + "px";
         preview.frame.style.position = "absolute";
         preview.frame.style.top = "0px";
         preview.frame.style.width = viewportWidth + "px";
@@ -1437,64 +1303,6 @@ export class LocalHumanReviewService implements HumanReviewService {
         }
       }
 
-      function installFrameObservers(preview) {
-        cleanupFrameState(preview.frame);
-
-        const frameDocument = preview.frame.contentDocument;
-        if (!frameDocument || !frameDocument.documentElement) {
-          return;
-        }
-
-        let queued = false;
-        const requestMeasurement = () => {
-          if (queued) {
-            return;
-          }
-
-          queued = true;
-          window.requestAnimationFrame(() => {
-            queued = false;
-            updateFrameHeight(preview.frame, measureFrameHeight(preview.frame));
-          });
-        };
-
-        let mutationObserver = null;
-        if (typeof MutationObserver === "function") {
-          mutationObserver = new MutationObserver(requestMeasurement);
-          mutationObserver.observe(frameDocument.documentElement, {
-            attributes: true,
-            characterData: true,
-            childList: true,
-            subtree: true
-          });
-        }
-
-        if (frameDocument.fonts && frameDocument.fonts.ready) {
-          frameDocument.fonts.ready.then(requestMeasurement).catch(() => {});
-        }
-
-        const state = getFrameState(preview.frame);
-        state.cleanup = () => {
-          if (mutationObserver) {
-            mutationObserver.disconnect();
-          }
-        };
-
-        requestMeasurement();
-      }
-
-      function isHtmlFrame(frame) {
-        try {
-          return Boolean(
-            frame.contentDocument &&
-              typeof frame.contentDocument.contentType === "string" &&
-              frame.contentDocument.contentType.includes("html")
-          );
-        } catch (_error) {
-          return false;
-        }
-      }
-
       function setVotingEnabled(enabled) {
         for (const button of voteButtons) {
           button.disabled = !enabled;
@@ -1504,11 +1312,6 @@ export class LocalHumanReviewService implements HumanReviewService {
       }
 
       function resetPreviewFrame(preview) {
-        cleanupFrameState(preview.frame);
-        const state = getFrameState(preview.frame);
-        state.contentHeight = DEFAULT_FRAME_HEIGHT;
-        preview.wrap.style.height = DEFAULT_FRAME_HEIGHT + "px";
-        preview.wrap.dataset.scaled = "false";
         preview.frame.style.position = "absolute";
         preview.frame.style.top = "0px";
         preview.frame.style.width = viewportWidth + "px";
@@ -1518,9 +1321,6 @@ export class LocalHumanReviewService implements HumanReviewService {
       }
 
       function clearPreviewFrame(preview) {
-        cleanupFrameState(preview.frame);
-        preview.wrap.style.height = DEFAULT_FRAME_HEIGHT + "px";
-        preview.wrap.dataset.scaled = "false";
         preview.frame.style.position = "absolute";
         preview.frame.style.top = "0px";
         preview.frame.style.left = "0px";
@@ -1533,19 +1333,6 @@ export class LocalHumanReviewService implements HumanReviewService {
         saveViewportWidth(viewportWidth);
         updateViewportButtons();
         layoutPreviewFrames();
-      }
-
-      function handleFrameMessage(event) {
-        if (!event.data || event.data.type !== FRAME_HEIGHT_MESSAGE_TYPE) {
-          return;
-        }
-
-        const preview = previewFrames.find((candidate) => candidate.frame.contentWindow === event.source);
-        if (!preview) {
-          return;
-        }
-
-        updateFrameHeight(preview.frame, Number(event.data.height));
       }
 
       function clearFrames() {
@@ -1666,10 +1453,7 @@ export class LocalHumanReviewService implements HumanReviewService {
 
       previewFrames.forEach((preview) => {
         preview.frame.addEventListener("load", () => {
-          updateFrameHeight(preview.frame, measureFrameHeight(preview.frame));
-          if (!isHtmlFrame(preview.frame)) {
-            installFrameObservers(preview);
-          }
+          layoutPreviewFrames();
         });
       });
 
@@ -1687,7 +1471,6 @@ export class LocalHumanReviewService implements HumanReviewService {
         window.addEventListener("resize", layoutPreviewFrames);
       }
 
-      window.addEventListener("message", handleFrameMessage);
       updateViewportButtons();
       layoutPreviewFrames();
 

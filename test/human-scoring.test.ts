@@ -8,7 +8,7 @@ import { LocalHumanReviewService } from "../src/core/human-scoring.js";
 import { Logger } from "../src/core/logger.js";
 
 describe("LocalHumanReviewService", () => {
-  it("serves viewport controls and injects artifact height bridge scripts", async () => {
+  it("serves viewport controls for fixed-height iframe previews", async () => {
     const workspaceRoot = await fs.mkdtemp(
       path.join(os.tmpdir(), "skill-autoresearch-human-scoring-")
     );
@@ -105,7 +105,6 @@ describe("LocalHumanReviewService", () => {
     const artifactHtml = await artifactResponse.text();
     expect(artifactResponse.ok).toBe(true);
     expect(artifactHtml).toContain('<base href="/artifact/incumbent/">');
-    expect(artifactHtml).toContain("skill-autoresearch:artifact-height");
 
     const voteResponse = await fetch(`${baseUrl}/api/vote`, {
       method: "POST",
