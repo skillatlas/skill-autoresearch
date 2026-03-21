@@ -28,6 +28,17 @@ The skill should guide *how to design*, not dictate *what to design*. Every edit
 
 If you find yourself writing a specific value (a font name, a color, a number), ask: "Will this make outputs more varied or less varied?" If less varied, rewrite it as a principle instead.
 
+## Idea selection
+
+Before you edit the file, pressure-test your improvement choice with a short self-questioning loop:
+
+- Come up with one candidate improvement idea and name it clearly.
+- Assume the first idea is probably too obvious, too safe, or too close to the current text.
+- Come up with a second candidate improvement idea and name it clearly.
+- Compare the two: which would do more to improve the quality and distinctiveness of generated output?
+- If the answer is not obvious yet, generate another candidate and keep comparing until one idea is clearly strongest.
+- Only then make the single surgical edit.
+
 ## Rules
 
 - Do NOT rewrite the entire file. Make a surgical, focused edit.
