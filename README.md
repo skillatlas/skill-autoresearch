@@ -36,6 +36,11 @@ Runs are **resumable**: if the process is interrupted, re-run with `--resume` to
 
 ## Getting started
 
+### Prerequisites
+
+- **Node.js** (v18+)
+- **Docker** — each candidate is generated inside an isolated Docker container via [`@botanicastudios/code-container`](https://www.npmjs.com/package/@botanicastudios/code-container). Docker must be running before you start a run.
+
 ### 1. Install
 
 ```bash
