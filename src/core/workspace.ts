@@ -2,6 +2,7 @@ import fs from "fs-extra";
 import path from "node:path";
 
 import { Logger } from "./logger.js";
+import { ScoringMode } from "../types/state.js";
 
 export interface WorkspacePaths {
   root: string;
@@ -64,10 +65,14 @@ export class WorkspaceManager {
     return path.resolve(this.root, relativePath);
   }
 
-  public async validateSourceInputs(): Promise<void> {
+  public async validateSourceInputs(
+    options: { scoringMode: ScoringMode }
+  ): Promise<void> {
     await this.ensureRequiredFile(this.paths.instructionsPath);
     await this.ensureRequiredFile(this.paths.generationPath);
-    await this.ensureRequiredFile(this.paths.rubricPath);
+    if (options.scoringMode === "rubric") {
+      await this.ensureRequiredFile(this.paths.rubricPath);
+    }
     await this.ensureRequiredDirectory(this.paths.skillsDir);
     await this.ensureRequiredDirectory(this.paths.stepsDir);
     await this.ensureRequiredDirectory(this.paths.archiveDir);

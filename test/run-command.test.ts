@@ -1,6 +1,10 @@
 import path from "node:path";
+import { InvalidArgumentError } from "commander";
 
-import { resolveWorkspaceRoot } from "../src/commands/run.js";
+import {
+  normalizeRunCliOptions,
+  resolveWorkspaceRoot
+} from "../src/commands/run.js";
 
 describe("run command workspace resolution", () => {
   it("defaults the workspace root to the invocation directory", () => {
@@ -18,5 +22,39 @@ describe("run command workspace resolution", () => {
     expect(resolveWorkspaceRoot("/tmp/custom-workspace", "/tmp/workspace")).toBe(
       "/tmp/custom-workspace"
     );
+  });
+
+  it("defaults human scoring to one vote when the CLI vote value is unchanged", () => {
+    expect(
+      normalizeRunCliOptions(
+        {
+          candidates: 3,
+          votes: 3,
+          minSteps: 0,
+          maxSteps: 20,
+          resume: false,
+          dryRun: false,
+          verbose: false,
+          scoringMode: "human"
+        },
+        { votes: "default" }
+      ).votes
+    ).toBe(1);
+  });
+
+  it("rejects model overrides in human scoring mode", () => {
+    expect(() =>
+      normalizeRunCliOptions({
+        candidates: 3,
+        votes: 1,
+        minSteps: 0,
+        maxSteps: 20,
+        resume: false,
+        dryRun: false,
+        verbose: false,
+        model: "test-model",
+        scoringMode: "human"
+      })
+    ).toThrow(InvalidArgumentError);
   });
 });

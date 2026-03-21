@@ -1,6 +1,7 @@
 import path from "node:path";
 
 import { ContainerRunner } from "./container-runner.js";
+import { HumanReviewService } from "./human-scoring.js";
 import { Logger } from "./logger.js";
 import {
   ScoringService,
@@ -9,10 +10,12 @@ import {
 } from "./scorer.js";
 import { StateStore } from "./state-store.js";
 import { WorkspaceManager } from "./workspace.js";
+import { ScoreVote } from "../types/rubric.js";
 import { RunState } from "../types/state.js";
 
 export interface RunOptions {
   workspaceRoot: string;
+  scoringMode: RunState["scoringMode"];
   candidateCount: number;
   voteCount: number;
   minSteps: number;
@@ -40,6 +43,7 @@ function createInitialState(
     version: 1,
     runId,
     workspaceRoot: workspace.root,
+    scoringMode: options.scoringMode,
     status: "running",
     stepIndex: 0,
     candidateCount: options.candidateCount,
@@ -71,13 +75,16 @@ export class Orchestrator {
     private readonly stateStore: StateStore,
     private readonly containerRunner: ContainerRunner,
     private readonly scorer: ScoringService,
+    private readonly humanReview: HumanReviewService,
     private readonly logger: Logger,
     private readonly options: RunOptions,
     private readonly now: () => Date = () => new Date()
   ) {}
 
   public async run(): Promise<RunState | undefined> {
-    await this.workspace.validateSourceInputs();
+    await this.workspace.validateSourceInputs({
+      scoringMode: this.options.scoringMode
+    });
     await this.workspace.prepareRuntimeDirs();
 
     if (this.options.dryRun) {
@@ -173,7 +180,6 @@ export class Orchestrator {
     const archivePath = await this.workspace.archiveExistingSteps(previewRunId, {
       dryRun: true
     });
-    const rubric = await this.scorer.loadRubric(this.workspace.paths.rubricPath);
 
     this.logger.info(`Dry run for workspace ${this.workspace.root}`);
     this.logger.info(`Run ID: ${previewRunId}`);
@@ -181,6 +187,13 @@ export class Orchestrator {
     this.logger.info(
       `Planned loop: baseline + up to ${this.options.maxSteps} mutation step(s), ${this.options.candidateCount} candidate(s) per step, ${this.options.voteCount} vote(s) per candidate.`
     );
+
+    if (this.options.scoringMode === "human") {
+      this.logger.info("Human scorer: local review server on localhost");
+      return;
+    }
+
+    const rubric = await this.scorer.loadRubric(this.workspace.paths.rubricPath);
     this.logger.info(
       `Rubric scorer: ${
         rubric.provider
@@ -316,6 +329,10 @@ export class Orchestrator {
       throw new Error("Cannot score candidates before an incumbent artifact exists.");
     }
 
+    if (state.scoringMode === "human") {
+      return this.scoreCandidatesWithHumanReview(state);
+    }
+
     const rubric = await this.scorer.loadRubric(this.workspace.paths.rubricPath);
     const modelId = state.modelOverride ?? rubric.modelId;
     const incumbentEvidence = await this.scorer.collectEvidence(
@@ -359,6 +376,59 @@ export class Orchestrator {
         `Candidate ${candidate.index} scored ${candidate.comparison.bVotes}/${state.voteCount} vote(s) for B.`
       );
     });
+
+    state.status = "running";
+    state.currentPhase = "promote";
+    await this.saveState(state);
+
+    return state;
+  }
+
+  private async scoreCandidatesWithHumanReview(state: RunState): Promise<RunState> {
+    if (!state.incumbentPath) {
+      throw new Error("Cannot score candidates before an incumbent artifact exists.");
+    }
+
+    const pendingCandidates = state.activeCandidates.filter(
+      (candidate) =>
+        !(
+          candidate.status === "scored" &&
+          candidate.votes.length >= state.voteCount &&
+          candidate.comparison
+        )
+    );
+
+    if (pendingCandidates.length > 0) {
+      await this.humanReview.reviewCandidates({
+        runId: state.runId,
+        stepIndex: state.stepIndex,
+        voteCount: state.voteCount,
+        incumbentPath: this.workspace.resolveWorkspacePath(state.incumbentPath),
+        candidates: pendingCandidates.map((candidate) => ({
+          index: candidate.index,
+          path: this.workspace.resolveWorkspacePath(candidate.path),
+          completedVotes: candidate.votes.length
+        })),
+        onVote: async ({ candidateIndex, vote }) => {
+          const candidate = state.activeCandidates.find(
+            (activeCandidate) => activeCandidate.index === candidateIndex
+          );
+
+          if (!candidate) {
+            throw new Error(`Unable to record human vote for candidate ${candidateIndex}.`);
+          }
+
+          this.recordCandidateVote(candidate, vote, state.voteCount);
+          await this.saveState(state);
+
+          if (candidate.status === "scored" && candidate.comparison) {
+            this.logger.info(
+              `Candidate ${candidate.index} scored ${candidate.comparison.bVotes}/${state.voteCount} vote(s) for B.`
+            );
+          }
+        }
+      });
+    }
 
     state.status = "running";
     state.currentPhase = "promote";
@@ -451,6 +521,26 @@ export class Orchestrator {
     await saveOperation;
   }
 
+  private recordCandidateVote(
+    candidate: RunState["activeCandidates"][number],
+    vote: ScoreVote,
+    voteCount: number
+  ): void {
+    const attempt = candidate.votes.length;
+
+    candidate.votes.push({
+      attempt,
+      winner: vote.winner,
+      confidence: vote.confidence,
+      rationale: vote.rationale
+    });
+    candidate.comparison = summarizeVotes(candidate.votes);
+
+    if (candidate.votes.length >= voteCount) {
+      candidate.status = "scored";
+    }
+  }
+
   private getStopReason(state: RunState): "max-steps" | "stasis" | undefined {
     if (state.currentPhase === "generate-baseline") {
       return undefined;
@@ -491,6 +581,9 @@ export class Orchestrator {
     }
     if ((state.modelOverride ?? undefined) !== this.options.modelOverride) {
       mismatches.push(`model=${state.modelOverride ?? "<rubric default>"}`);
+    }
+    if (state.scoringMode !== this.options.scoringMode) {
+      mismatches.push(`scoring-mode=${state.scoringMode}`);
     }
 
     if (mismatches.length > 0) {

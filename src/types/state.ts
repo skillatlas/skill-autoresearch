@@ -8,6 +8,8 @@ export const runStatusSchema = z.enum([
   "completed"
 ]);
 
+export const scoringModeSchema = z.enum(["rubric", "human"]);
+
 export const runPhaseSchema = z.enum([
   "generate-baseline",
   "snapshot",
@@ -62,6 +64,7 @@ export const runStateSchema = z.object({
   version: z.literal(1),
   runId: z.string(),
   workspaceRoot: z.string(),
+  scoringMode: scoringModeSchema.default("rubric"),
   status: runStatusSchema,
   stepIndex: z.number().int().nonnegative(),
   candidateCount: z.number().int().positive(),
@@ -82,6 +85,7 @@ export const runStateSchema = z.object({
 });
 
 export type RunStatus = z.infer<typeof runStatusSchema>;
+export type ScoringMode = z.infer<typeof scoringModeSchema>;
 export type RunPhase = z.infer<typeof runPhaseSchema>;
 export type CandidateStatus = z.infer<typeof candidateStatusSchema>;
 export type VoteRecord = z.infer<typeof voteRecordSchema>;

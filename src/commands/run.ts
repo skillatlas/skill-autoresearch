@@ -2,6 +2,7 @@ import path from "node:path";
 import { Command, InvalidArgumentError } from "commander";
 
 import { CodeContainerRunner } from "../core/container-runner.js";
+import { LocalHumanReviewService } from "../core/human-scoring.js";
 import { Logger } from "../core/logger.js";
 import { Orchestrator, RunOptions } from "../core/orchestrator.js";
 import { loadRubric } from "../core/rubric.js";
@@ -13,6 +14,7 @@ import {
 } from "../core/scorer.js";
 import { StateStore } from "../core/state-store.js";
 import { WorkspaceManager } from "../core/workspace.js";
+import { ScoringMode } from "../types/state.js";
 
 function parseNonNegativeInteger(value: string): number {
   const parsedValue = Number.parseInt(value, 10);
@@ -42,6 +44,43 @@ export interface RunCliOptions {
   model?: string;
   dryRun: boolean;
   verbose: boolean;
+  scoringMode: ScoringMode;
+}
+
+interface RunCliOptionSources {
+  votes?: string;
+}
+
+function parseScoringMode(value: string): ScoringMode {
+  if (value === "rubric" || value === "human") {
+    return value;
+  }
+
+  throw new InvalidArgumentError(
+    `Expected scoring mode to be "rubric" or "human", received ${value}.`
+  );
+}
+
+export function normalizeRunCliOptions(
+  options: Omit<RunCliOptions, "scoringMode"> & { scoringMode?: string },
+  sources: RunCliOptionSources = {}
+): RunCliOptions {
+  const scoringMode = parseScoringMode(options.scoringMode ?? "rubric");
+  let votes = options.votes;
+
+  if (scoringMode === "human" && sources.votes === "default") {
+    votes = 1;
+  }
+
+  if (scoringMode === "human" && options.model) {
+    throw new InvalidArgumentError("--model cannot be used with --scoring-mode human.");
+  }
+
+  return {
+    ...options,
+    votes,
+    scoringMode
+  };
 }
 
 export function resolveWorkspaceRoot(
@@ -60,8 +99,10 @@ export async function runCommand(
   const workspaceRoot = resolveWorkspaceRoot(workspaceArg);
   const logger = new Logger(options.verbose);
   const workspace = new WorkspaceManager(workspaceRoot, logger);
-  const rubric = await loadRubric(workspace.paths.rubricPath);
-  loadWorkspaceEnv(workspace.paths.envPath, { scoringProvider: rubric.provider });
+  if (options.scoringMode === "rubric") {
+    const rubric = await loadRubric(workspace.paths.rubricPath);
+    loadWorkspaceEnv(workspace.paths.envPath, { scoringProvider: rubric.provider });
+  }
 
   const runOptions: RunOptions = {
     workspaceRoot,
@@ -72,7 +113,8 @@ export async function runCommand(
     stasisSteps: options.stasisSteps,
     resume: options.resume,
     modelOverride: options.model,
-    dryRun: options.dryRun
+    dryRun: options.dryRun,
+    scoringMode: options.scoringMode
   };
 
   const orchestrator = new Orchestrator(
@@ -88,6 +130,7 @@ export async function runCommand(
       },
       options.verbose
     ),
+    new LocalHumanReviewService(logger),
     logger,
     runOptions
   );
@@ -106,7 +149,24 @@ export function buildRunCommand(): Command {
     .option("--stasis-steps <n>", "Rejected mutation streak before stopping", parseNonNegativeInteger)
     .option("--resume", "Resume from existing state", false)
     .option("--model <id>", "Override rubric model")
+    .option(
+      "--scoring-mode <mode>",
+      "Choose scoring mode: rubric or human",
+      "rubric"
+    )
     .option("--dry-run", "Validate inputs and print planned actions without running agents", false)
     .option("--verbose", "Include child command details in logs", false)
-    .action(runCommand);
+    .action(
+      (
+        workspaceArg: string | undefined,
+        rawOptions: Omit<RunCliOptions, "scoringMode"> & { scoringMode?: string },
+        command: Command
+      ) =>
+        runCommand(
+          workspaceArg,
+          normalizeRunCliOptions(rawOptions, {
+            votes: command.getOptionValueSource("votes")
+          })
+        )
+    );
 }
