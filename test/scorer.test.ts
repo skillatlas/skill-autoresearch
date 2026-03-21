@@ -281,7 +281,7 @@ if (command === "screenshot") {
             {
               outputType: "image",
               command:
-                'capture-screenshot "$STEP_ORIGIN/index.html" "$STEP_PATH/index.png"',
+                'skill-autoresearch capture-screenshot "$STEP_ORIGIN/index.html" "$STEP_PATH/index.png"',
               resultPath: "$STEP_PATH/index.png"
             }
           ],
@@ -576,7 +576,7 @@ if (command === "close") {
               {
                 outputType: "image",
                 command:
-                  'capture-screenshot "$STEP_ORIGIN/index.html" "$STEP_PATH/index.png"',
+                  'skill-autoresearch capture-screenshot "$STEP_ORIGIN/index.html" "$STEP_PATH/index.png"',
                 resultPath: "$STEP_PATH/index.png"
               }
             ],
@@ -594,7 +594,7 @@ if (command === "close") {
               {
                 outputType: "image",
                 command:
-                  'capture-screenshot "$STEP_ORIGIN/index.html" "$STEP_PATH/index.png"',
+                  'skill-autoresearch capture-screenshot "$STEP_ORIGIN/index.html" "$STEP_PATH/index.png"',
                 resultPath: "$STEP_PATH/index.png"
               }
             ],
