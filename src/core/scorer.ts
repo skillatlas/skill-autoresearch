@@ -516,38 +516,39 @@ export class Scorer {
     const evidence: EvidenceItem[] = [];
 
     for (const [index, commandDefinition] of rubric.commands.entries()) {
-      const command = interpolateStepPath(commandDefinition.command, resolvedStepPath);
-      if (this.verbose) {
-        this.logger.debug(`Executing rubric command: ${command}`);
+      if (commandDefinition.command) {
+        const command = interpolateStepPath(commandDefinition.command, resolvedStepPath);
+        if (this.verbose) {
+          this.logger.debug(`Executing rubric command: ${command}`);
+        }
+
+        const result = await execaCommand(command, {
+          cwd: this.workspaceRoot,
+          env: {
+            ...process.env,
+            STEP_PATH: resolvedStepPath
+          },
+          all: true,
+          reject: false,
+          shell: true
+        });
+
+        if (this.verbose && result.all?.trim()) {
+          this.logger.debug(result.all);
+        }
+
+        if (result.exitCode !== 0) {
+          throw new Error(
+            `Rubric command failed for ${stepPath} with exit code ${result.exitCode}.`
+          );
+        }
       }
 
-      const result = await execaCommand(command, {
-        cwd: this.workspaceRoot,
-        env: {
-          ...process.env,
-          STEP_PATH: resolvedStepPath
-        },
-        all: true,
-        reject: false,
-        shell: true
-      });
-
-      if (this.verbose && result.all?.trim()) {
-        this.logger.debug(result.all);
-      }
-
-      if (result.exitCode !== 0) {
-        throw new Error(
-          `Rubric command failed for ${stepPath} with exit code ${result.exitCode}.`
-        );
-      }
-
-      const label = `command-${index + 1}`;
+      const label = `evidence-${index + 1}`;
       if (commandDefinition.outputType === "text") {
         const textEvidence = await this.readTextEvidence(
           commandDefinition.resultPath,
-          resolvedStepPath,
-          result.stdout
+          resolvedStepPath
         );
         evidence.push({
           outputType: "text",
@@ -622,40 +623,26 @@ export class Scorer {
   }
 
   private async readTextEvidence(
-    resultPath: string | undefined,
-    resolvedStepPath: string,
-    stdout: string
+    resultPath: string,
+    resolvedStepPath: string
   ): Promise<string> {
-    if (resultPath) {
-      const filePath = path.resolve(
-        this.workspaceRoot,
-        interpolateStepPath(resultPath, resolvedStepPath)
-      );
-      const content = (await fs.readFile(filePath, "utf8")).trim();
-      if (content.length === 0) {
-        throw new Error(`Text evidence is empty: ${filePath}`);
-      }
-
-      return content;
+    const filePath = path.resolve(
+      this.workspaceRoot,
+      interpolateStepPath(resultPath, resolvedStepPath)
+    );
+    const content = (await fs.readFile(filePath, "utf8")).trim();
+    if (content.length === 0) {
+      throw new Error(`Text evidence is empty: ${filePath}`);
     }
 
-    const trimmedStdout = stdout.trim();
-    if (trimmedStdout.length === 0) {
-      throw new Error(`Text evidence command returned empty output for ${resolvedStepPath}.`);
-    }
-
-    return trimmedStdout;
+    return content;
   }
 
   private async readImageEvidence(
-    resultPath: string | undefined,
+    resultPath: string,
     resolvedStepPath: string,
     label: string
   ): Promise<EvidenceItem> {
-    if (!resultPath) {
-      throw new Error("Image rubric commands must define `resultPath`.");
-    }
-
     const imagePath = path.resolve(
       this.workspaceRoot,
       interpolateStepPath(resultPath, resolvedStepPath)
