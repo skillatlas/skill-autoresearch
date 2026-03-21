@@ -149,7 +149,7 @@ describe("scoring helpers", () => {
 
   it("builds a mixed OpenRouter evidence message", () => {
     const imageBytes = Buffer.from("image");
-    const message = (new OpenRouterVoteJudge() as any).buildEvidenceMessage(
+    const message = (new OpenRouterVoteJudge(new Logger(false)) as any).buildEvidenceMessage(
       "Candidate A",
       [
         {
@@ -180,6 +180,70 @@ describe("scoring helpers", () => {
       type: "image",
       image: imageBytes
     });
+  });
+
+  it("logs the OpenRouter scoring input when DEBUG_SCORE=1", () => {
+    const logger = new Logger(false);
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => undefined);
+    const previousDebugScore = process.env.DEBUG_SCORE;
+    process.env.DEBUG_SCORE = "1";
+
+    try {
+      (new OpenRouterVoteJudge(logger) as any).logDebugInput(
+        {
+          modelId: "test-model",
+          rubricPrompt: "Judge the candidates.",
+          incumbentEvidence: [
+            {
+              outputType: "text",
+              label: "markup",
+              content: "<main>A</main>"
+            }
+          ],
+          candidateEvidence: [
+            {
+              outputType: "image",
+              label: "shot",
+              path: "/tmp/b.png",
+              mimeType: "image/png",
+              bytes: Buffer.from("b")
+            }
+          ]
+        },
+        [
+          {
+            role: "user",
+            content: "Candidate A evidence:\n\nEvidence 1 (markup):\n<main>A</main>"
+          },
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: "Candidate B evidence."
+              },
+              {
+                type: "image",
+                image: Buffer.from("b")
+              }
+            ]
+          }
+        ]
+      );
+
+      expect(infoSpy).toHaveBeenCalledTimes(1);
+      const [message] = infoSpy.mock.calls[0];
+      expect(message).toContain("OpenRouter scoring input");
+      expect(message).toContain('"provider": "openrouter"');
+      expect(message).toContain('"byteLength": 1');
+    } finally {
+      if (previousDebugScore === undefined) {
+        delete process.env.DEBUG_SCORE;
+      } else {
+        process.env.DEBUG_SCORE = previousDebugScore;
+      }
+      infoSpy.mockRestore();
+    }
   });
 
   it("builds a mixed Codex prompt with stable image ordering", async () => {
@@ -223,5 +287,54 @@ describe("scoring helpers", () => {
     expect(prompt).toContain("Evidence 1 (hero) [image attachment 2]: b.png");
     expect(prompt).toContain("Evidence 2 (markup) [text]:");
     expect(prompt).toContain("Image attachments are provided in the numbered order above.");
+  });
+
+  it("logs the Codex scoring input when DEBUG_SCORE=1", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "codex-"));
+    const logger = new Logger(false);
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => undefined);
+    const previousDebugScore = process.env.DEBUG_SCORE;
+    process.env.DEBUG_SCORE = "1";
+
+    try {
+      (new CodexVoteJudge(workspaceRoot, logger, false) as any).logDebugInput(
+        {
+          modelId: "gpt-5",
+          rubricPrompt: "Judge the candidates.",
+          incumbentEvidence: [
+            {
+              outputType: "text",
+              label: "markup",
+              content: "<main>A</main>"
+            }
+          ],
+          candidateEvidence: [
+            {
+              outputType: "image",
+              label: "shot",
+              path: path.join(workspaceRoot, "b.png"),
+              mimeType: "image/png",
+              bytes: Buffer.from("b")
+            }
+          ]
+        },
+        "Prompt text",
+        [path.join(workspaceRoot, "b.png")],
+        ["exec", "--image", path.join(workspaceRoot, "b.png"), "Prompt text"]
+      );
+
+      expect(infoSpy).toHaveBeenCalledTimes(1);
+      const [message] = infoSpy.mock.calls[0];
+      expect(message).toContain("Codex scoring input");
+      expect(message).toContain('"provider": "codex"');
+      expect(message).toContain('"prompt": "Prompt text"');
+    } finally {
+      if (previousDebugScore === undefined) {
+        delete process.env.DEBUG_SCORE;
+      } else {
+        process.env.DEBUG_SCORE = previousDebugScore;
+      }
+      infoSpy.mockRestore();
+    }
   });
 });
