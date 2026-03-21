@@ -215,7 +215,12 @@ async function startStaticFileServerOnPort(
 interface EvidenceExecutionContext {
   resolvedStepPath: string;
   stepOrigin?: string;
+  runId: string;
   close: () => Promise<void>;
+}
+
+function createRubricRunId(): string {
+  return `rubric-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 export function summarizeVotes(
@@ -728,6 +733,7 @@ export class Scorer {
       env: {
         ...process.env,
         STEP_PATH: executionContext.resolvedStepPath,
+        RUBRIC_RUN_ID: executionContext.runId,
         ...(executionContext.stepOrigin
           ? { STEP_ORIGIN: executionContext.stepOrigin }
           : {})
@@ -817,6 +823,7 @@ export class Scorer {
     if (rubric.httpServerPort == null) {
       return {
         resolvedStepPath,
+        runId: createRubricRunId(),
         close: async () => undefined
       };
     }
@@ -828,6 +835,7 @@ export class Scorer {
     return {
       resolvedStepPath,
       stepOrigin: server.origin,
+      runId: createRubricRunId(),
       close: server.close
     };
   }
