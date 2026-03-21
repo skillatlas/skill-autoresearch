@@ -36,16 +36,26 @@ Runs are **resumable**: if the process is interrupted, re-run with `--resume` to
 
 ## Getting started
 
-### 1. Install dependencies
+### 1. Install
 
 ```bash
-npm install
-npm run build
+# Run directly with npx (no install needed):
+npx skill-autoresearch run
+
+# Or install globally:
+npm install -g skill-autoresearch
+skill-autoresearch run
 ```
 
 ### 2. Set up a workspace
 
-A workspace is a directory containing everything the tool needs. Create one with this structure:
+A workspace is a directory containing everything the tool needs. You can scaffold one with sample files:
+
+```bash
+skill-autoresearch bootstrap
+```
+
+This creates starter versions of every required file without overwriting anything that already exists. Or create the workspace manually with this structure:
 
 ```
 my-workspace/
@@ -100,13 +110,13 @@ CLAUDE_CODE_OAUTH_TOKEN=your-token-here
 
 ```bash
 # From within the workspace directory:
-skill-autoresearch run
+npx skill-autoresearch run
 
 # Or point to a workspace:
-skill-autoresearch run ./my-workspace
+npx skill-autoresearch run ./my-workspace
 
 # Dry run — validate inputs without executing anything:
-skill-autoresearch run --dry-run
+npx skill-autoresearch run --dry-run
 ```
 
 ## Workspace files
@@ -165,9 +175,11 @@ The skill file that gets iteratively improved. You can have multiple skill folde
 
 ## CLI reference
 
-```
-skill-autoresearch run [workspace] [options]
-```
+### `skill-autoresearch bootstrap [workspace]`
+
+Scaffold a new workspace with sample `INSTRUCTIONS.md`, `GENERATION.md`, `RUBRIC.md`, and `skills/` directory. Skips any file that already exists.
+
+### `skill-autoresearch run [workspace] [options]`
 
 | Option | Default | Description |
 |---|---|---|
