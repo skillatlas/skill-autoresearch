@@ -18,19 +18,21 @@ describe("workspace sandboxes", () => {
     await fs.ensureDir(candidateDir);
     const sandbox = await workspace.createGenerationSandbox(candidateDir);
 
-    const claudeLink = path.join(candidateDir, ".claude", "skills");
-    const agentsLink = path.join(candidateDir, ".agents", "skills");
-    expect(sandbox.containerRoot).toBe(candidateDir);
-    expect(sandbox.targetPath).toBe(candidateDir);
+    const claudeLink = path.join(sandbox.targetPath, ".claude", "skills");
+    const agentsLink = path.join(sandbox.targetPath, ".agents", "skills");
+    expect(sandbox.containerRoot).toBe(sandbox.targetPath);
+    expect(sandbox.targetPath).not.toBe(candidateDir);
     expect((await fs.lstat(claudeLink)).isSymbolicLink()).toBe(true);
     expect((await fs.lstat(agentsLink)).isSymbolicLink()).toBe(true);
     expect(path.resolve(path.dirname(claudeLink), await fs.readlink(claudeLink))).toBe(
-      path.join(candidateDir, "skills")
+      path.join(sandbox.targetPath, "skills")
     );
     expect(path.resolve(path.dirname(agentsLink), await fs.readlink(agentsLink))).toBe(
-      path.join(candidateDir, "skills")
+      path.join(sandbox.targetPath, "skills")
     );
 
+    expect(await fs.pathExists(path.join(candidateDir, "skills"))).toBe(false);
+    await sandbox.persistArtifacts();
     await sandbox.cleanup();
 
     expect(await fs.pathExists(path.join(candidateDir, "skills"))).toBe(true);
@@ -49,6 +51,7 @@ describe("workspace sandboxes", () => {
     const workspace = new WorkspaceManager(workspaceRoot, new Logger(false));
     const sandbox = await workspace.createMutationSandbox(1);
 
+    expect(path.relative(workspaceRoot, sandbox.containerRoot).startsWith("..")).toBe(true);
     await fs.writeFile(
       path.join(sandbox.targetPath, "demo", "SKILL.md"),
       "version=4\n",

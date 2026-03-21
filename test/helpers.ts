@@ -66,6 +66,24 @@ function parseRelativeTarget(workspaceRoot: string, targetPath: string): string 
   return path.relative(workspaceRoot, targetPath).split(path.sep).join("/");
 }
 
+function parseLogicalTarget(
+  workspaceRoot: string,
+  execution: ContainerExecution
+): string {
+  if (execution.label === "Baseline generation") {
+    return "steps/0/baseline";
+  }
+
+  const candidateMatch = execution.label.match(
+    /^Candidate (\d+) generation for step (\d+)$/
+  );
+  if (candidateMatch) {
+    return `steps/${candidateMatch[2]}/candidates/${candidateMatch[1]}`;
+  }
+
+  return parseRelativeTarget(workspaceRoot, execution.targetPath);
+}
+
 export interface FakeContainerOptions {
   mutationVersions?: number[];
   candidateScores?: Record<string, number>;
@@ -84,7 +102,7 @@ export class FakeContainerRunner implements ContainerRunner {
   ) {}
 
   public async runPrompt(execution: ContainerExecution): Promise<void> {
-    const relativeTarget = parseRelativeTarget(this.workspaceRoot, execution.targetPath);
+    const relativeTarget = parseLogicalTarget(this.workspaceRoot, execution);
     this.executions.push(relativeTarget);
 
     if (

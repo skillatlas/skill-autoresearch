@@ -32,6 +32,13 @@ const FORWARDED_ENV_VARS: Record<GenerationHarness, readonly string[]> = {
 
 let cachedContainerCliEntryPoint: string | undefined;
 
+function isGenerationExecution(execution: ContainerExecution): boolean {
+  return (
+    execution.label === "Baseline generation" ||
+    execution.label.startsWith("Candidate ")
+  );
+}
+
 function normalizeContainerPath(relativePath: string): string {
   return relativePath.split(path.sep).join("/");
 }
@@ -104,9 +111,15 @@ export function buildContainerExecArgs(
     }
   }
 
+  const debugGeneration =
+    execution.harness === "claude" &&
+    env.DEBUG_GENERATION === "1" &&
+    isGenerationExecution(execution);
   const agentCommand =
     execution.harness === "claude"
-      ? 'cd "$1" && claude -p "$2"'
+      ? debugGeneration
+        ? 'cd "$1" && claude --verbose --output-format stream-json -p "$2"'
+        : 'cd "$1" && claude -p "$2"'
       : 'cd "$1" && codex exec --skip-git-repo-check -a never --sandbox workspace-write "$2"';
 
   args.push(
@@ -133,6 +146,10 @@ export class CodeContainerRunner implements ContainerRunner {
   public async runPrompt(execution: ContainerExecution): Promise<void> {
     const containerCliEntryPoint = resolveContainerCliEntryPoint();
     const args = buildContainerExecArgs(containerCliEntryPoint, execution);
+    const debugGeneration =
+      execution.harness === "claude" &&
+      process.env.DEBUG_GENERATION === "1" &&
+      isGenerationExecution(execution);
 
     this.logger.phase(execution.label, { targetPath: execution.targetPath });
     if (this.verbose) {
@@ -141,7 +158,9 @@ export class CodeContainerRunner implements ContainerRunner {
 
     const result = await execa(process.execPath, args, {
       cwd: this.workspaceRoot,
-      all: true,
+      all: debugGeneration ? undefined : true,
+      stdout: debugGeneration ? "inherit" : undefined,
+      stderr: debugGeneration ? "inherit" : undefined,
       reject: false
     });
 

@@ -1,4 +1,5 @@
 import fs from "fs-extra";
+import os from "node:os";
 import path from "node:path";
 
 import { Logger } from "./logger.js";
@@ -25,6 +26,7 @@ export interface WorkspacePaths {
 export interface ExecutionSandbox {
   containerRoot: string;
   targetPath: string;
+  persistArtifacts(): Promise<void>;
   cleanup(): Promise<void>;
 }
 
@@ -87,27 +89,29 @@ export class WorkspaceManager {
   }
 
   public async createGenerationSandbox(targetPath: string): Promise<ExecutionSandbox> {
-    await fs.ensureDir(targetPath);
-    const sandboxSkillsPath = path.join(targetPath, "skills");
+    const sandboxRoot = await this.createTempSandboxRoot("generation-");
+    const sandboxTargetPath = path.join(sandboxRoot, "artifact");
+    const sandboxSkillsPath = path.join(sandboxTargetPath, "skills");
+    await fs.ensureDir(sandboxTargetPath);
     await fs.copy(this.paths.skillsDir, sandboxSkillsPath);
-    await this.createSandboxSkillLinks(targetPath, sandboxSkillsPath);
+    await this.createSandboxSkillLinks(sandboxTargetPath, sandboxSkillsPath);
 
     return {
-      containerRoot: targetPath,
-      targetPath,
+      containerRoot: sandboxTargetPath,
+      targetPath: sandboxTargetPath,
+      persistArtifacts: async () => {
+        await this.cleanupSandboxAgentLinks(sandboxTargetPath);
+        await this.replaceDirectoryFromSource(sandboxTargetPath, targetPath);
+      },
       cleanup: async () => {
-        await this.cleanupSandboxRoot(targetPath);
+        await fs.remove(sandboxRoot);
       }
     };
   }
 
   public async createMutationSandbox(stepIndex: number): Promise<MutationSandbox> {
-    const sandboxRoot = path.join(
-      this.paths.runtimeDir,
-      "sandboxes",
-      `mutation-step-${stepIndex}-${Date.now()}-${Math.random()
-        .toString(16)
-        .slice(2)}`
+    const sandboxRoot = await this.createTempSandboxRoot(
+      `mutation-step-${stepIndex}-`
     );
     const sandboxSkillsPath = path.join(sandboxRoot, "skills");
 
@@ -118,6 +122,7 @@ export class WorkspaceManager {
     return {
       containerRoot: sandboxRoot,
       targetPath: sandboxSkillsPath,
+      persistArtifacts: async () => {},
       applyChanges: async () => {
         await this.replaceDirectoryFromSource(sandboxSkillsPath, this.paths.skillsDir);
       },
@@ -222,11 +227,6 @@ export class WorkspaceManager {
     }
   }
 
-  private async cleanupSandboxRoot(rootPath: string): Promise<void> {
-    await fs.remove(path.join(rootPath, ".claude"));
-    await fs.remove(path.join(rootPath, ".agents"));
-  }
-
   private async replaceDirectoryFromSource(
     sourcePath: string,
     destinationPath: string
@@ -241,6 +241,15 @@ export class WorkspaceManager {
     await fs.remove(tempPath);
     await fs.copy(sourcePath, tempPath);
     await fs.move(tempPath, destinationPath, { overwrite: true });
+  }
+
+  private async createTempSandboxRoot(prefix: string): Promise<string> {
+    return fs.mkdtemp(path.join(os.tmpdir(), `skill-autoresearch-${prefix}`));
+  }
+
+  private async cleanupSandboxAgentLinks(rootPath: string): Promise<void> {
+    await fs.remove(path.join(rootPath, ".claude"));
+    await fs.remove(path.join(rootPath, ".agents"));
   }
 
   private async ensureRequiredFile(filePath: string): Promise<void> {
