@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 
 import { execa } from "execa";
 
+import { formatCommandFailure } from "./error-format.js";
 import { Logger } from "./logger.js";
 import { GenerationHarness } from "../types/generation.js";
 
@@ -60,6 +61,23 @@ function resolveTargetPathWithinWorkspace(
   return relativeTargetPath.length > 0
     ? normalizeContainerPath(relativeTargetPath)
     : ".";
+}
+
+function quoteCommandArg(value: string): string {
+  return /^[A-Za-z0-9_./:=+-]+$/.test(value) ? value : JSON.stringify(value);
+}
+
+function summarizeExecArgs(args: readonly string[]): string {
+  if (args.length === 0) {
+    return process.execPath;
+  }
+
+  const summarizedArgs = [...args];
+  summarizedArgs[summarizedArgs.length - 1] = "[prompt omitted]";
+
+  return `${quoteCommandArg(process.execPath)} ${summarizedArgs
+    .map((arg) => quoteCommandArg(arg))
+    .join(" ")}`;
 }
 
 export function resolveContainerCliEntryPoint(): string {
@@ -169,9 +187,24 @@ export class CodeContainerRunner implements ContainerRunner {
     }
 
     if (result.exitCode !== 0) {
-      throw new Error(
-        `Container command failed for ${execution.targetPath} with exit code ${result.exitCode}.`
+      const failureMessage = formatCommandFailure({
+        label: "Container command",
+        subject: execution.label,
+        command: summarizeExecArgs(args),
+        exitCode: result.exitCode ?? 1,
+        output: result.all
+      });
+
+      this.logger.error(
+        failureMessage,
+        {
+          containerRoot: execution.containerRoot,
+          targetPath: execution.targetPath,
+          harness: execution.harness
+        },
+        "container-command-failed"
       );
+      throw new Error(failureMessage);
     }
   }
 }

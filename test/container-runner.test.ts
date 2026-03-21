@@ -1,11 +1,26 @@
 import path from "node:path";
+import { vi } from "vitest";
 
 import {
   buildContainerExecArgs,
+  CodeContainerRunner,
   resolveContainerCliEntryPoint
 } from "../src/core/container-runner.js";
+import { Logger } from "../src/core/logger.js";
+
+const { execaMock } = vi.hoisted(() => ({
+  execaMock: vi.fn()
+}));
+
+vi.mock("execa", () => ({
+  execa: execaMock
+}));
 
 describe("container runner", () => {
+  beforeEach(() => {
+    execaMock.mockReset();
+  });
+
   it("resolves the bundled code-container CLI entrypoint", () => {
     const entryPoint = resolveContainerCliEntryPoint();
 
@@ -207,5 +222,35 @@ describe("container runner", () => {
         {}
       )
     ).toThrow("must be inside workspace");
+  });
+
+  it("includes child output in command failures without logging the full prompt", async () => {
+    execaMock.mockResolvedValue({
+      exitCode: 1,
+      all: "agent crashed"
+    });
+
+    const runner = new CodeContainerRunner("/tmp/workspace", new Logger(false), false);
+
+    let error: Error | undefined;
+    try {
+      await runner.runPrompt({
+        containerRoot: "/tmp/workspace",
+        targetPath: "/tmp/workspace/steps/1/candidates/2",
+        prompt: "very sensitive prompt body",
+        label: "Candidate 2 generation for step 1",
+        harness: "claude"
+      });
+    } catch (thrown) {
+      error = thrown as Error;
+    }
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error?.message).toContain(
+      "Container command failed for Candidate 2 generation for step 1 with exit code 1."
+    );
+    expect(error?.message).toContain("Output:\nagent crashed");
+    expect(error?.message).toContain("[prompt omitted]");
+    expect(error?.message).not.toContain("very sensitive prompt body");
   });
 });
