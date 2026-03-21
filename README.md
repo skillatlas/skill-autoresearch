@@ -178,7 +178,7 @@ You are a design critic evaluating two HTML pages. Score them on visual identity
 | `commands[].command` | Shell command to produce evidence, or a built-in rubric helper such as `capture-screenshot` (optional — omit to read the file directly) |
 | `commands[].resultPath` | Path to the evidence file. `$STEP_PATH` is replaced at runtime. |
 
-Rubric commands also receive `$RUBRIC_RUN_ID`, a unique identifier for that evidence-collection pass. Use it for tool-level session names when commands may run concurrently.
+Rubric commands also receive `$RUBRIC_RUN_ID`, a unique identifier for that evidence-collection pass. If a CLI needs a process-local session or socket name, combine it with `$$` as shown above.
 
 ### `skills/<name>/SKILL.md`
 
