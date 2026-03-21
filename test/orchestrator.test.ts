@@ -215,6 +215,47 @@ describe("orchestrator integration", () => {
     });
   });
 
+  it("starts the web interface before baseline generation in rubric mode", async () => {
+    const workspaceRoot = await createWorkspaceCopy();
+    let reviewServerStarted = false;
+
+    await runOrchestrator({
+      workspaceRoot,
+      options: {
+        maxSteps: 0
+      },
+      containerRunner: {
+        async runPrompt(execution) {
+          expect(reviewServerStarted).toBe(true);
+          await new FakeContainerRunner(workspaceRoot).runPrompt(execution);
+        }
+      },
+      scorer: new FakeScorer(workspaceRoot),
+      humanReview: {
+        async startRun() {
+          expect(
+            await readSkillVersionFromPath(
+              workspaceRoot,
+              "skills-original/demo/SKILL.md"
+            )
+          ).toBe(0);
+          expect(
+            await readSkillVersionFromPath(
+              workspaceRoot,
+              "skills-previous/demo/SKILL.md"
+            )
+          ).toBe(0);
+          reviewServerStarted = true;
+        },
+        syncState() {},
+        async reviewCandidates() {
+          throw new Error("Rubric mode should not request human reviews.");
+        },
+        async close() {}
+      }
+    });
+  });
+
   it("archives old steps and promotes a step winner by candidate majority", async () => {
     const workspaceRoot = await createWorkspaceCopy();
     await fs.ensureDir(path.join(workspaceRoot, "steps", "old"));
