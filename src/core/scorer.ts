@@ -3,6 +3,7 @@ import { generateObject } from "ai";
 import { openrouter } from "@openrouter/ai-sdk-provider";
 import dotenv from "dotenv";
 import { execa, execaCommand } from "execa";
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import path from "node:path";
 
@@ -101,6 +102,78 @@ function serializeEvidenceForDebug(evidence: EvidenceItem[]) {
           byteLength: item.bytes.length
         }
   );
+}
+
+function tokenizeShellCommand(command: string): string[] | undefined {
+  const tokens: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | undefined;
+  let escaping = false;
+
+  for (const character of command) {
+    if (escaping) {
+      current += character;
+      escaping = false;
+      continue;
+    }
+
+    if (character === "\\") {
+      escaping = true;
+      continue;
+    }
+
+    if (quote) {
+      if (character === quote) {
+        quote = undefined;
+      } else {
+        current += character;
+      }
+      continue;
+    }
+
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+
+    if (/\s/.test(character)) {
+      if (current.length > 0) {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+
+    current += character;
+  }
+
+  if (escaping || quote) {
+    return undefined;
+  }
+
+  if (current.length > 0) {
+    tokens.push(current);
+  }
+
+  return tokens;
+}
+
+function parseCaptureScreenshotCommand(command: string):
+  | { pageUrl: string; outputPath: string }
+  | undefined {
+  const tokens = tokenizeShellCommand(command);
+  if (!tokens || tokens.length !== 4) {
+    return undefined;
+  }
+
+  if (tokens[0] !== "skill-autoresearch" || tokens[1] !== "capture-screenshot") {
+    return undefined;
+  }
+
+  return {
+    pageUrl: tokens[2],
+    outputPath: tokens[3]
+  };
 }
 
 function inferStaticContentType(filePath: string): string {
@@ -728,6 +801,16 @@ export class Scorer {
     stepPath: string,
     executionContext: EvidenceExecutionContext
   ): Promise<void> {
+    const captureScreenshotCommand = parseCaptureScreenshotCommand(command);
+    if (captureScreenshotCommand) {
+      await this.captureScreenshot(
+        captureScreenshotCommand.pageUrl,
+        captureScreenshotCommand.outputPath,
+        stepPath
+      );
+      return;
+    }
+
     const result = await execaCommand(command, {
       cwd: this.workspaceRoot,
       env: {
@@ -758,6 +841,75 @@ export class Scorer {
         })
       );
     }
+  }
+
+  private async captureScreenshot(
+    pageUrl: string,
+    outputPath: string,
+    stepPath: string
+  ): Promise<void> {
+    const resolvedOutputPath = path.resolve(outputPath);
+    await fs.ensureDir(path.dirname(resolvedOutputPath));
+
+    let lastError: Error | undefined;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const sessionId = `capture-${randomUUID()}`;
+      const output: string[] = [];
+
+      try {
+        for (const args of [
+          [`-s=${sessionId}`, "open", pageUrl],
+          [`-s=${sessionId}`, "resize", "1440", "1080"],
+          [`-s=${sessionId}`, "screenshot", "--filename", resolvedOutputPath]
+        ]) {
+          const result = await execa("playwright-cli", args, {
+            cwd: this.workspaceRoot,
+            all: true,
+            reject: false
+          });
+
+          if (this.verbose && result.all?.trim()) {
+            this.logger.debug(result.all);
+          }
+
+          if (result.all?.trim()) {
+            output.push(result.all.trim());
+          }
+
+          if (result.exitCode !== 0) {
+            throw new Error(
+              formatCommandFailure({
+                label: "Rubric command",
+                subject: stepPath,
+                command: `skill-autoresearch capture-screenshot "${pageUrl}" "${resolvedOutputPath}"`,
+                exitCode: result.exitCode ?? 1,
+                output: output.join("\n")
+              })
+            );
+          }
+        }
+
+        return;
+      } catch (error) {
+        lastError = error as Error;
+        const message = lastError.message;
+        if (!message.includes("EADDRINUSE") || attempt === 1) {
+          throw lastError;
+        }
+      } finally {
+        try {
+          await execa("playwright-cli", [`-s=${sessionId}`, "close"], {
+            cwd: this.workspaceRoot,
+            all: true,
+            reject: false
+          });
+        } catch {
+          // Best effort cleanup. Any actionable error should come from the rubric command itself.
+        }
+      }
+    }
+
+    throw lastError ?? new Error(`Failed to capture screenshot for ${stepPath}.`);
   }
 
   private getJudge(provider: ScoringProvider): VoteJudge {

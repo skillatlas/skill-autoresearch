@@ -281,7 +281,7 @@ if (command === "screenshot") {
             {
               outputType: "image",
               command:
-                'playwright-cli -s="$RUBRIC_RUN_ID-$$" open "$STEP_ORIGIN/index.html" && playwright-cli -s="$RUBRIC_RUN_ID-$$" resize 1440 1080 && playwright-cli -s="$RUBRIC_RUN_ID-$$" screenshot --filename "$STEP_PATH/index.png" && playwright-cli -s="$RUBRIC_RUN_ID-$$" close',
+                'skill-autoresearch capture-screenshot "$STEP_ORIGIN/index.html" "$STEP_PATH/index.png"',
               resultPath: "$STEP_PATH/index.png"
             }
           ],
@@ -304,7 +304,7 @@ if (command === "screenshot") {
         .map((line) => JSON.parse(line) as string[]);
       expect(commandLog).toHaveLength(4);
       const sessionFlag = commandLog[0]?.[0];
-      expect(sessionFlag).toMatch(/^-s=rubric-.*-[0-9]+$/);
+      expect(sessionFlag).toMatch(/^-s=capture-/);
       expect(commandLog[0]).toEqual([
         sessionFlag,
         "open",
