@@ -2361,7 +2361,6 @@ export class LocalHumanReviewService implements HumanReviewService {
       <section class="step-browser">
         <div>
           <p class="eyebrow">Step viewer</p>
-          <p class="step-browser-copy">Select Current to follow the live step, or pin any completed step to inspect its winner, artifact pair, and skill diff without auto-advancing.</p>
         </div>
         <div class="step-tabs" id="step-tabs"></div>
       </section>
