@@ -281,7 +281,7 @@ if (command === "screenshot") {
             {
               outputType: "image",
               command:
-                'playwright-cli open "$STEP_ORIGIN/index.html" && playwright-cli resize 1440 1080 && playwright-cli screenshot --filename "$STEP_PATH/index.png" && playwright-cli close',
+                'playwright-cli -s="$RUBRIC_RUN_ID" open "$STEP_ORIGIN/index.html" && playwright-cli -s="$RUBRIC_RUN_ID" resize 1440 1080 && playwright-cli -s="$RUBRIC_RUN_ID" screenshot --filename "$STEP_PATH/index.png" && playwright-cli -s="$RUBRIC_RUN_ID" close',
               resultPath: "$STEP_PATH/index.png"
             }
           ],
@@ -303,17 +303,21 @@ if (command === "screenshot") {
         .split("\n")
         .map((line) => JSON.parse(line) as string[]);
       expect(commandLog).toHaveLength(4);
+      const sessionFlag = commandLog[0]?.[0];
+      expect(sessionFlag).toMatch(/^-s=rubric-/);
       expect(commandLog[0]).toEqual([
+        sessionFlag,
         "open",
         expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/index\.html$/)
       ]);
-      expect(commandLog[1]).toEqual(["resize", "1440", "1080"]);
+      expect(commandLog[1]).toEqual([sessionFlag, "resize", "1440", "1080"]);
       expect(commandLog[2]).toEqual([
+        sessionFlag,
         "screenshot",
         "--filename",
         path.join(absoluteStepPath, "index.png")
       ]);
-      expect(commandLog[3]).toEqual(["close"]);
+      expect(commandLog[3]).toEqual([sessionFlag, "close"]);
     } finally {
       process.env.PATH = previousPath;
       if (previousLogPath == null) {
