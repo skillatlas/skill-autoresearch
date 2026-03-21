@@ -1,4 +1,5 @@
 import fs from "fs-extra";
+import { spawn } from "node:child_process";
 import { createServer, IncomingMessage, Server, ServerResponse } from "node:http";
 import path from "node:path";
 import { URL } from "node:url";
@@ -23,6 +24,10 @@ export interface HumanReviewInput {
 
 export interface HumanReviewService {
   reviewCandidates(input: HumanReviewInput): Promise<void>;
+}
+
+export interface BrowserOpener {
+  open(url: string): Promise<void>;
 }
 
 interface ReviewItem {
@@ -142,8 +147,35 @@ function sendHtml(response: ServerResponse, statusCode: number, html: string): v
   response.end(html);
 }
 
+class SystemBrowserOpener implements BrowserOpener {
+  public async open(url: string): Promise<void> {
+    const command =
+      process.platform === "darwin"
+        ? { bin: "open", args: [url] }
+        : process.platform === "win32"
+          ? { bin: "cmd", args: ["/c", "start", "", url] }
+          : { bin: "xdg-open", args: [url] };
+
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(command.bin, command.args, {
+        stdio: "ignore",
+        detached: process.platform !== "win32"
+      });
+
+      child.once("error", reject);
+      child.once("spawn", () => {
+        child.unref();
+        resolve();
+      });
+    });
+  }
+}
+
 export class LocalHumanReviewService implements HumanReviewService {
-  public constructor(private readonly logger: Logger) {}
+  public constructor(
+    private readonly logger: Logger,
+    private readonly browserOpener: BrowserOpener = new SystemBrowserOpener()
+  ) {}
 
   public async reviewCandidates(input: HumanReviewInput): Promise<void> {
     const reviewQueue = input.candidates.flatMap((candidate) =>
@@ -254,6 +286,17 @@ export class LocalHumanReviewService implements HumanReviewService {
             path: candidate.path
           }))
         };
+      };
+
+      const logPendingComparison = () => {
+        const currentItem = reviewQueue[activeIndex];
+        if (!currentItem) {
+          return;
+        }
+
+        this.logger.info(
+          `Awaiting human review ${activeIndex + 1}/${reviewQueue.length}: candidate ${currentItem.candidateIndex}, vote ${currentItem.attempt + 1}/${input.voteCount}.`
+        );
       };
 
       const handleArtifactRequest = async (
@@ -494,6 +537,19 @@ export class LocalHumanReviewService implements HumanReviewService {
         list-style: none;
       }
 
+      .progress-track {
+        height: 10px;
+        margin-top: 16px;
+        background: rgba(23, 18, 13, 0.08);
+      }
+
+      .progress-fill {
+        width: 0%;
+        height: 100%;
+        background: linear-gradient(90deg, var(--accent), var(--accent-strong));
+        transition: width 180ms ease-out;
+      }
+
       .queue-list li + li {
         margin-top: 10px;
       }
@@ -645,6 +701,9 @@ export class LocalHumanReviewService implements HumanReviewService {
         <aside class="queue">
           <p class="eyebrow">Queue</p>
           <div id="queue-summary">Loading review queue…</div>
+          <div class="progress-track" aria-hidden="true">
+            <div class="progress-fill" id="progress-fill"></div>
+          </div>
           <ul class="queue-list" id="queue-list"></ul>
         </aside>
       </section>
@@ -685,6 +744,7 @@ export class LocalHumanReviewService implements HumanReviewService {
     <script>
       const queueSummary = document.getElementById("queue-summary");
       const queueList = document.getElementById("queue-list");
+      const progressFill = document.getElementById("progress-fill");
       const promptTitle = document.getElementById("prompt-title");
       const promptMeta = document.getElementById("prompt-meta");
       const incumbentPath = document.getElementById("incumbent-path");
@@ -707,6 +767,10 @@ export class LocalHumanReviewService implements HumanReviewService {
 
       function render(session) {
         currentSession = session;
+        const progressRatio = session.totalComparisons === 0
+          ? 1
+          : session.completedComparisons / session.totalComparisons;
+        progressFill.style.width = (progressRatio * 100).toFixed(1) + "%";
         queueSummary.textContent = session.done
           ? "All comparisons submitted."
           : "Comparison " + session.current.comparisonNumber + " of " + session.totalComparisons;
@@ -866,8 +930,13 @@ export class LocalHumanReviewService implements HumanReviewService {
           const sessionPayload = buildSessionPayload();
           sendJson(response, 200, sessionPayload);
 
+          this.logger.info(
+            `Recorded human vote ${activeIndex}/${reviewQueue.length}: candidate ${currentItem.candidateIndex} -> ${payload.winner}.`
+          );
           if (sessionPayload.done) {
             setImmediate(() => finish());
+          } else {
+            logPendingComparison();
           }
           return;
         }
@@ -910,6 +979,15 @@ export class LocalHumanReviewService implements HumanReviewService {
         this.logger.phase(
           `Human scoring ready at ${baseUrl} (${reviewQueue.length} comparison(s))`
         );
+        void this.browserOpener
+          .open(baseUrl)
+          .then(() => {
+            this.logger.info(`Opened human scoring in the default browser: ${baseUrl}`);
+            logPendingComparison();
+          })
+          .catch((error: unknown) => {
+            finish(error);
+          });
       });
     });
   }
