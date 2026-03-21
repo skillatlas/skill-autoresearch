@@ -161,7 +161,7 @@ commands:
   - outputType: text
     resultPath: "$STEP_PATH/index.html"
   - outputType: image
-    command: capture-screenshot "$STEP_ORIGIN/index.html" "$STEP_PATH/index.png"
+    command: skill-autoresearch capture-screenshot "$STEP_ORIGIN/index.html" "$STEP_PATH/index.png"
     resultPath: "$STEP_PATH/index.png"
 ---
 
@@ -179,6 +179,8 @@ You are a design critic evaluating two HTML pages. Score them on visual identity
 | `commands[].outputType` | `text` or `image` |
 | `commands[].command` | Shell command to produce evidence, or a built-in rubric helper such as `capture-screenshot` (optional — omit to read the file directly) |
 | `commands[].resultPath` | Path to the evidence file. `$STEP_PATH` is replaced at runtime. |
+
+Rubric commands also receive `$RUBRIC_RUN_ID`, a unique identifier for that evidence-collection pass. Use it for tool-level session names when commands may run concurrently.
 
 ### `skills/<name>/SKILL.md`
 
