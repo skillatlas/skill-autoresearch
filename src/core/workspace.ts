@@ -74,8 +74,8 @@ export class WorkspaceManager {
       await this.ensureRequiredFile(this.paths.rubricPath);
     }
     await this.ensureRequiredDirectory(this.paths.skillsDir);
-    await this.ensureRequiredDirectory(this.paths.stepsDir);
-    await this.ensureRequiredDirectory(this.paths.archiveDir);
+    await this.ensureManagedDirectory(this.paths.stepsDir);
+    await this.ensureManagedDirectory(this.paths.archiveDir);
     await this.ensureSkillFolders();
   }
 
@@ -255,6 +255,19 @@ export class WorkspaceManager {
       throw new Error(
         `Missing required directory: ${this.relativeToRoot(directoryPath)}`
       );
+    }
+
+    const stats = await fs.stat(directoryPath);
+    if (!stats.isDirectory()) {
+      throw new Error(`Expected directory: ${this.relativeToRoot(directoryPath)}`);
+    }
+  }
+
+  private async ensureManagedDirectory(directoryPath: string): Promise<void> {
+    const exists = await fs.pathExists(directoryPath);
+    if (!exists) {
+      await fs.ensureDir(directoryPath);
+      return;
     }
 
     const stats = await fs.stat(directoryPath);
