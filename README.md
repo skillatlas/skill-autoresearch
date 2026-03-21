@@ -159,7 +159,7 @@ commands:
   - outputType: text
     resultPath: "$STEP_PATH/index.html"
   - outputType: image
-    command: playwright-cli -s="$RUBRIC_RUN_ID" open "$STEP_ORIGIN/index.html" && playwright-cli -s="$RUBRIC_RUN_ID" resize 1440 1080 && playwright-cli -s="$RUBRIC_RUN_ID" screenshot --filename "$STEP_PATH/index.png" && playwright-cli -s="$RUBRIC_RUN_ID" close
+    command: playwright-cli -s="$RUBRIC_RUN_ID-$$" open "$STEP_ORIGIN/index.html" && playwright-cli -s="$RUBRIC_RUN_ID-$$" resize 1440 1080 && playwright-cli -s="$RUBRIC_RUN_ID-$$" screenshot --filename "$STEP_PATH/index.png" && playwright-cli -s="$RUBRIC_RUN_ID-$$" close
     resultPath: "$STEP_PATH/index.png"
 ---
 
@@ -178,7 +178,7 @@ You are a design critic evaluating two HTML pages. Score them on visual identity
 | `commands[].command` | Shell command to produce evidence (optional — omit to read the file directly) |
 | `commands[].resultPath` | Path to the evidence file. `$STEP_PATH` is replaced at runtime. |
 
-Rubric commands also receive `$RUBRIC_RUN_ID`, a unique identifier for that evidence-collection pass. Use it for tool-level session names when commands may run concurrently.
+Rubric commands also receive `$RUBRIC_RUN_ID`, a unique identifier for that evidence-collection pass. If a CLI needs a process-local session or socket name, combine it with `$$` as shown above.
 
 ### `skills/<name>/SKILL.md`
 
