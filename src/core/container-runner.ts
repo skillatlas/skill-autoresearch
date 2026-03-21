@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
+import { Readable } from "node:stream";
 
 import { execa } from "execa";
 
@@ -78,6 +79,32 @@ function summarizeExecArgs(args: readonly string[]): string {
   return `${quoteCommandArg(process.execPath)} ${summarizedArgs
     .map((arg) => quoteCommandArg(arg))
     .join(" ")}`;
+}
+
+function writePrefixedOutput(stream: Readable, prefix: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let buffered = "";
+
+    stream.setEncoding("utf8");
+    stream.on("data", (chunk: string) => {
+      buffered += chunk;
+
+      let newlineIndex = buffered.indexOf("\n");
+      while (newlineIndex !== -1) {
+        const line = buffered.slice(0, newlineIndex).replace(/\r$/, "");
+        console.log(`${prefix} ${line}`);
+        buffered = buffered.slice(newlineIndex + 1);
+        newlineIndex = buffered.indexOf("\n");
+      }
+    });
+    stream.on("end", () => {
+      if (buffered.length > 0) {
+        console.log(`${prefix} ${buffered.replace(/\r$/, "")}`);
+      }
+      resolve();
+    });
+    stream.on("error", reject);
+  });
 }
 
 export function resolveContainerCliEntryPoint(): string {
@@ -168,21 +195,28 @@ export class CodeContainerRunner implements ContainerRunner {
       execution.harness === "claude" &&
       process.env.DEBUG_GENERATION === "1" &&
       isGenerationExecution(execution);
+    const debugPrefix = resolveTargetPathWithinWorkspace(
+      this.workspaceRoot,
+      execution.targetPath
+    );
 
     this.logger.phase(execution.label, { targetPath: execution.targetPath });
     if (this.verbose) {
       this.logger.debug(`node ${args.join(" ")}`);
     }
 
-    const result = await execa(process.execPath, args, {
+    const subprocess = execa(process.execPath, args, {
       cwd: this.workspaceRoot,
-      all: debugGeneration ? undefined : true,
-      stdout: debugGeneration ? "inherit" : undefined,
-      stderr: debugGeneration ? "inherit" : undefined,
+      all: true,
       reject: false
     });
+    const streamedOutput = debugGeneration && subprocess.all
+      ? writePrefixedOutput(subprocess.all, debugPrefix)
+      : undefined;
+    const result = await subprocess;
+    await streamedOutput;
 
-    if (this.verbose && result.all?.trim()) {
+    if (this.verbose && !debugGeneration && result.all?.trim()) {
       this.logger.debug(result.all);
     }
 
