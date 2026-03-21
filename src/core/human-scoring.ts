@@ -936,17 +936,29 @@ export class LocalHumanReviewService implements HumanReviewService {
 
       .panel-header {
         display: flex;
-        align-items: baseline;
+        align-items: flex-start;
         justify-content: space-between;
         gap: 16px;
         padding: 16px 18px 10px;
         border-bottom: 1px solid var(--line);
       }
 
+      .panel-heading {
+        display: grid;
+        gap: 4px;
+      }
+
       .panel-title {
         margin: 0;
         font-size: 24px;
         line-height: 1.1;
+      }
+
+      .panel-actions {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 10px;
       }
 
       .panel-path {
@@ -989,12 +1001,6 @@ export class LocalHumanReviewService implements HumanReviewService {
         color: var(--muted);
       }
 
-      .actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
-      }
-
       button,
       .link-button {
         appearance: none;
@@ -1008,7 +1014,8 @@ export class LocalHumanReviewService implements HumanReviewService {
         transition: transform 140ms ease, background-color 140ms ease;
       }
 
-      button[data-variant="secondary"] {
+      button[data-variant="secondary"],
+      .link-button[data-variant="secondary"] {
         background: transparent;
         color: var(--ink);
       }
@@ -1017,6 +1024,7 @@ export class LocalHumanReviewService implements HumanReviewService {
       .link-button[aria-disabled="true"] {
         opacity: 0.5;
         cursor: not-allowed;
+        pointer-events: none;
       }
 
       button:hover:not(:disabled),
@@ -1034,6 +1042,14 @@ export class LocalHumanReviewService implements HumanReviewService {
         .header,
         .workspace {
           grid-template-columns: 1fr;
+        }
+
+        .panel-header {
+          flex-direction: column;
+        }
+
+        .panel-actions {
+          justify-content: flex-start;
         }
 
         iframe {
@@ -1065,25 +1081,31 @@ export class LocalHumanReviewService implements HumanReviewService {
           <strong id="prompt-title">Connecting…</strong>
           <span id="prompt-meta"></span>
         </div>
-        <div class="actions">
-          <a class="link-button" id="open-incumbent" href="#" target="_blank" rel="noreferrer" aria-disabled="true">Open incumbent</a>
-          <a class="link-button" id="open-candidate" href="#" target="_blank" rel="noreferrer" aria-disabled="true">Open candidate</a>
-          <button id="vote-incumbent" type="button" data-winner="A" data-variant="secondary" disabled>Incumbent wins</button>
-          <button id="vote-candidate" type="button" data-winner="B" disabled>Candidate wins</button>
-        </div>
       </section>
 
       <section class="workspace">
         <article class="panel">
           <header class="panel-header">
-            <h2 class="panel-title">Incumbent</h2>
+            <div class="panel-heading">
+              <h2 class="panel-title">Incumbent</h2>
+            </div>
+            <div class="panel-actions">
+              <a class="link-button" id="open-incumbent" href="#" target="_blank" rel="noreferrer" data-variant="secondary" aria-disabled="true">Open</a>
+              <button id="vote-incumbent" type="button" data-winner="A">Incumbent wins</button>
+            </div>
           </header>
           <div class="panel-path" id="incumbent-path"></div>
           <iframe id="incumbent-frame" title="Incumbent artifact" loading="eager"></iframe>
         </article>
         <article class="panel">
           <header class="panel-header">
-            <h2 class="panel-title" id="candidate-label">Candidate</h2>
+            <div class="panel-heading">
+              <h2 class="panel-title" id="candidate-label">Candidate</h2>
+            </div>
+            <div class="panel-actions">
+              <a class="link-button" id="open-candidate" href="#" target="_blank" rel="noreferrer" data-variant="secondary" aria-disabled="true">Open</a>
+              <button id="vote-candidate" type="button" data-winner="B">Candidate wins</button>
+            </div>
           </header>
           <div class="panel-path" id="candidate-path"></div>
           <iframe id="candidate-frame" title="Candidate artifact" loading="eager"></iframe>
