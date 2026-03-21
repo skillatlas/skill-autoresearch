@@ -188,6 +188,8 @@ export class Orchestrator {
     this.logger.attachLogFile(this.workspace.paths.logsDir, runId);
     const archivePath = await this.workspace.archiveExistingSteps(runId);
     const state = createInitialState(this.workspace, runId, archivePath, this.options);
+    await this.workspace.snapshotSkills("original");
+    await this.workspace.snapshotSkills("previous");
     await this.saveState(state);
 
     return state;

@@ -194,6 +194,18 @@ describe("orchestrator integration", () => {
       scorer: new FakeScorer(workspaceRoot),
       humanReview: {
         async startRun() {
+          expect(
+            await readSkillVersionFromPath(
+              workspaceRoot,
+              "skills-original/demo/SKILL.md"
+            )
+          ).toBe(0);
+          expect(
+            await readSkillVersionFromPath(
+              workspaceRoot,
+              "skills-previous/demo/SKILL.md"
+            )
+          ).toBe(0);
           reviewServerStarted = true;
         },
         syncState() {},

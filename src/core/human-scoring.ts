@@ -80,10 +80,21 @@ interface SessionDiffFile {
 }
 
 interface SessionSkillDiff {
+  compareTarget: "original" | "previous";
+  label: string;
   basePath: string;
   currentPath: string;
   changedFileCount: number;
   files: SessionDiffFile[];
+}
+
+interface SessionSkillDiffState {
+  visible: boolean;
+  preferredTarget: "original" | "previous";
+  targets: {
+    original: SessionSkillDiff | null;
+    previous: SessionSkillDiff | null;
+  };
 }
 
 const PREVIEW_VIEWPORTS = [480, 960] as const;
@@ -594,20 +605,62 @@ export class LocalHumanReviewService implements HumanReviewService {
     };
   }
 
-  private buildSkillDiff(): SessionSkillDiff | null {
+  private buildSkillDiff(): SessionSkillDiffState | null {
     const state = this.latestState;
     if (!state) {
       return null;
     }
 
-    const basePath = path.resolve(state.workspaceRoot, state.skillsOriginalPath);
+    const original = this.buildSkillDiffTarget(
+      state.skillsOriginalPath,
+      "original",
+      "original"
+    );
+    const previous = this.buildSkillDiffTarget(
+      state.skillsPreviousPath,
+      "previous",
+      "previous step"
+    );
+
+    if (!original && !previous) {
+      return null;
+    }
+
+    const originalChanges = original?.changedFileCount ?? 0;
+    const previousChanges = previous?.changedFileCount ?? 0;
+
+    return {
+      visible: originalChanges > 0 || previousChanges > 0,
+      preferredTarget: previousChanges > 0 ? "previous" : "original",
+      targets: {
+        original,
+        previous
+      }
+    };
+  }
+
+  private buildSkillDiffTarget(
+    relativeBasePath: string,
+    compareTarget: "original" | "previous",
+    label: string
+  ): SessionSkillDiff | null {
+    const state = this.latestState;
+    if (!state) {
+      return null;
+    }
+
+    const basePath = path.resolve(state.workspaceRoot, relativeBasePath);
     const currentPath = path.resolve(state.workspaceRoot, "skills");
     if (!fs.existsSync(basePath) || !fs.existsSync(currentPath)) {
       return null;
     }
 
-    const filePaths = [...new Set([...listRelativeFilesSync(basePath), ...listRelativeFilesSync(currentPath)])]
-      .sort((left, right) => left.localeCompare(right));
+    const filePaths = [
+      ...new Set([
+        ...listRelativeFilesSync(basePath),
+        ...listRelativeFilesSync(currentPath)
+      ])
+    ].sort((left, right) => left.localeCompare(right));
     const files: SessionDiffFile[] = [];
 
     for (const relativePath of filePaths) {
@@ -646,12 +699,10 @@ export class LocalHumanReviewService implements HumanReviewService {
       });
     }
 
-    if (files.length === 0) {
-      return null;
-    }
-
     return {
-      basePath: state.skillsOriginalPath,
+      compareTarget,
+      label,
+      basePath: relativeBasePath,
       currentPath: "skills",
       changedFileCount: files.length,
       files
@@ -1429,11 +1480,47 @@ export class LocalHumanReviewService implements HumanReviewService {
         gap: 12px;
       }
 
+      .diff-header-tools {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 10px;
+      }
+
       .diff-title {
         margin: 0;
         font-size: clamp(24px, 3vw, 34px);
         line-height: 1.04;
         letter-spacing: -0.02em;
+      }
+
+      .diff-toggle {
+        display: inline-flex;
+        flex-wrap: wrap;
+        padding: 5px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.7);
+      }
+
+      .diff-toggle[hidden] {
+        display: none;
+      }
+
+      .diff-toggle-button {
+        padding: 8px 12px;
+        border: 0;
+        background: transparent;
+        color: var(--muted);
+        font-family: "Courier New", monospace;
+        font-size: 12px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      .diff-toggle-button[aria-pressed="true"] {
+        background: var(--ink);
+        color: #fffaf4;
       }
 
       .diff-summary {
@@ -1455,6 +1542,15 @@ export class LocalHumanReviewService implements HumanReviewService {
       .diff-files {
         display: grid;
         gap: 16px;
+      }
+
+      .diff-empty {
+        padding: 18px 20px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.72);
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.6;
       }
 
       .diff-file {
@@ -1622,6 +1718,11 @@ export class LocalHumanReviewService implements HumanReviewService {
         .diff-line {
           grid-template-columns: 48px 48px 18px minmax(240px, 1fr);
         }
+
+        .diff-header-tools {
+          width: 100%;
+          justify-content: flex-start;
+        }
       }
     </style>
   </head>
@@ -1703,8 +1804,11 @@ export class LocalHumanReviewService implements HumanReviewService {
         <div class="diff-header">
           <p class="eyebrow">Skill diff</p>
           <div class="diff-header-row">
-            <h2 class="diff-title">Current skills vs original</h2>
-            <div class="diff-summary" id="skill-diff-summary"></div>
+            <h2 class="diff-title">Current skills diff</h2>
+            <div class="diff-header-tools">
+              <div class="diff-toggle" id="skill-diff-toggle" role="group" aria-label="Skill diff comparison target" hidden></div>
+              <div class="diff-summary" id="skill-diff-summary"></div>
+            </div>
           </div>
           <p class="diff-subhead" id="skill-diff-paths"></p>
         </div>
@@ -1735,6 +1839,7 @@ export class LocalHumanReviewService implements HumanReviewService {
       const openIncumbent = document.getElementById("open-incumbent");
       const openCandidate = document.getElementById("open-candidate");
       const skillDiffSection = document.getElementById("skill-diff-section");
+      const skillDiffToggle = document.getElementById("skill-diff-toggle");
       const skillDiffSummary = document.getElementById("skill-diff-summary");
       const skillDiffPaths = document.getElementById("skill-diff-paths");
       const skillDiffFiles = document.getElementById("skill-diff-files");
@@ -1743,10 +1848,12 @@ export class LocalHumanReviewService implements HumanReviewService {
       const viewportButtons = Array.from(document.querySelectorAll("button[data-viewport]"));
 
       const VIEWPORT_STORAGE_KEY = "skill-autoresearch:human-scoring:viewport";
+      const SKILL_DIFF_TARGET_STORAGE_KEY = "skill-autoresearch:human-scoring:diff-target";
       const DEFAULT_VIEWPORT_WIDTH = ${DEFAULT_PREVIEW_VIEWPORT};
       const DEFAULT_FRAME_HEIGHT = ${DEFAULT_PREVIEW_HEIGHT};
       let currentSession = null;
       let viewportWidth = loadViewportWidth();
+      let selectedSkillDiffTarget = loadSkillDiffTarget();
       const previewFrames = [
         { frame: incumbentFrame, wrap: incumbentWrap },
         { frame: candidateFrame, wrap: candidateWrap }
@@ -1768,6 +1875,28 @@ export class LocalHumanReviewService implements HumanReviewService {
       function saveViewportWidth(nextWidth) {
         try {
           window.localStorage.setItem(VIEWPORT_STORAGE_KEY, String(nextWidth));
+        } catch (_error) {
+          // Ignore storage access failures.
+        }
+      }
+
+      function normalizeSkillDiffTarget(rawValue) {
+        return rawValue === "original" ? "original" : "previous";
+      }
+
+      function loadSkillDiffTarget() {
+        try {
+          return normalizeSkillDiffTarget(
+            window.localStorage.getItem(SKILL_DIFF_TARGET_STORAGE_KEY)
+          );
+        } catch (_error) {
+          return "previous";
+        }
+      }
+
+      function saveSkillDiffTarget(nextTarget) {
+        try {
+          window.localStorage.setItem(SKILL_DIFF_TARGET_STORAGE_KEY, nextTarget);
         } catch (_error) {
           // Ignore storage access failures.
         }
@@ -1871,27 +2000,100 @@ export class LocalHumanReviewService implements HumanReviewService {
 
       function clearSkillDiff() {
         skillDiffSection.hidden = true;
+        skillDiffToggle.hidden = true;
+        skillDiffToggle.innerHTML = "";
         skillDiffSummary.textContent = "";
         skillDiffPaths.textContent = "";
         skillDiffFiles.innerHTML = "";
       }
 
+      function resolveSkillDiffTarget(skillDiff) {
+        const targets = skillDiff && skillDiff.targets ? skillDiff.targets : null;
+        if (!targets) {
+          return null;
+        }
+
+        const availableTargets = ["previous", "original"].filter((target) => Boolean(targets[target]));
+        if (availableTargets.length === 0) {
+          return null;
+        }
+
+        if (availableTargets.includes(selectedSkillDiffTarget)) {
+          return selectedSkillDiffTarget;
+        }
+
+        if (availableTargets.includes(skillDiff.preferredTarget)) {
+          return skillDiff.preferredTarget;
+        }
+
+        return availableTargets[0];
+      }
+
+      function renderSkillDiffToggle(skillDiff, activeTarget) {
+        const availableTargets = ["previous", "original"].filter((target) =>
+          Boolean(skillDiff.targets && skillDiff.targets[target])
+        );
+
+        skillDiffToggle.innerHTML = "";
+        skillDiffToggle.hidden = availableTargets.length < 2;
+        if (availableTargets.length < 2) {
+          return;
+        }
+
+        for (const target of availableTargets) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "diff-toggle-button";
+          button.textContent = target === "previous" ? "Previous step" : "Original";
+          button.setAttribute("aria-pressed", target === activeTarget ? "true" : "false");
+          button.addEventListener("click", () => {
+            selectedSkillDiffTarget = target;
+            saveSkillDiffTarget(target);
+            renderSkillDiff(currentSession ? currentSession.skillDiff : null);
+          });
+          skillDiffToggle.appendChild(button);
+        }
+      }
+
       function renderSkillDiff(skillDiff) {
-        if (!skillDiff || !Array.isArray(skillDiff.files) || skillDiff.files.length === 0) {
+        if (!skillDiff || !skillDiff.visible) {
+          clearSkillDiff();
+          return;
+        }
+
+        const activeTarget = resolveSkillDiffTarget(skillDiff);
+        if (!activeTarget) {
+          clearSkillDiff();
+          return;
+        }
+
+        const activeDiff = skillDiff.targets[activeTarget];
+        if (!activeDiff) {
           clearSkillDiff();
           return;
         }
 
         skillDiffSection.hidden = false;
+        renderSkillDiffToggle(skillDiff, activeTarget);
         skillDiffSummary.textContent =
-          skillDiff.changedFileCount +
+          activeDiff.changedFileCount +
           " " +
-          pluralize(skillDiff.changedFileCount, "changed file", "changed files");
+          pluralize(activeDiff.changedFileCount, "changed file", "changed files") +
+          " \u00B7 " +
+          activeDiff.label;
         skillDiffPaths.textContent =
-          skillDiff.basePath + " compared with " + skillDiff.currentPath;
+          activeDiff.basePath + " compared with " + activeDiff.currentPath;
         skillDiffFiles.innerHTML = "";
 
-        for (const file of skillDiff.files) {
+        if (activeDiff.changedFileCount === 0) {
+          const empty = document.createElement("div");
+          empty.className = "diff-empty";
+          empty.textContent = "No skill changes compared with " + activeDiff.label + ".";
+          skillDiffFiles.appendChild(empty);
+          return;
+        }
+
+        for (const file of activeDiff.files) {
           const card = document.createElement("article");
           card.className = "diff-file";
 
