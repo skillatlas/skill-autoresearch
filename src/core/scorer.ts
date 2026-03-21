@@ -79,6 +79,28 @@ function assertImageBytesMatchMimeType(
   }
 }
 
+function isDebugScoreEnabled(): boolean {
+  return process.env.DEBUG_SCORE === "1";
+}
+
+function serializeEvidenceForDebug(evidence: EvidenceItem[]) {
+  return evidence.map((item) =>
+    item.outputType === "text"
+      ? {
+          outputType: "text" as const,
+          label: item.label,
+          content: item.content
+        }
+      : {
+          outputType: "image" as const,
+          label: item.label,
+          path: item.path,
+          mimeType: item.mimeType,
+          byteLength: item.bytes.length
+        }
+  );
+}
+
 export function summarizeVotes(
   votes: ReadonlyArray<ScoreVote | VoteRecord>
 ): CandidateComparison {
@@ -149,20 +171,25 @@ export interface ScoringService {
 }
 
 export class OpenRouterVoteJudge implements VoteJudge {
+  public constructor(private readonly logger: Logger) {}
+
   public async generateVote(input: {
     modelId: string;
     rubricPrompt: string;
     incumbentEvidence: EvidenceItem[];
     candidateEvidence: EvidenceItem[];
   }): Promise<ScoreVote> {
+    const messages = [
+      this.buildEvidenceMessage("Candidate A", input.incumbentEvidence),
+      this.buildEvidenceMessage("Candidate B", input.candidateEvidence)
+    ];
+    this.logDebugInput(input, messages);
+
     const result = await generateObject({
       model: openrouter(input.modelId),
       system: input.rubricPrompt,
       schema: scoreVoteSchema,
-      messages: [
-        this.buildEvidenceMessage("Candidate A", input.incumbentEvidence),
-        this.buildEvidenceMessage("Candidate B", input.candidateEvidence)
-      ]
+      messages
     });
 
     return result.object;
@@ -218,6 +245,54 @@ export class OpenRouterVoteJudge implements VoteJudge {
       content
     };
   }
+
+  private logDebugInput(
+    input: {
+      modelId: string;
+      rubricPrompt: string;
+      incumbentEvidence: EvidenceItem[];
+      candidateEvidence: EvidenceItem[];
+    },
+    messages: Array<
+      | { role: "user"; content: string }
+      | {
+          role: "user";
+          content: Array<
+            | { type: "text"; text: string }
+            | { type: "image"; image: Buffer }
+          >;
+        }
+    >
+  ): void {
+    if (!isDebugScoreEnabled()) {
+      return;
+    }
+
+    const payload = {
+      provider: "openrouter" as const,
+      modelId: input.modelId,
+      system: input.rubricPrompt,
+      messages: messages.map((message) => ({
+        role: message.role,
+        content:
+          typeof message.content === "string"
+            ? message.content
+            : message.content.map((part) =>
+                part.type === "text"
+                  ? { type: "text" as const, text: part.text }
+                  : { type: "image" as const, byteLength: part.image.length }
+              )
+      })),
+      incumbentEvidence: serializeEvidenceForDebug(input.incumbentEvidence),
+      candidateEvidence: serializeEvidenceForDebug(input.candidateEvidence)
+    };
+
+    this.logger.info(
+      `[score-debug] OpenRouter scoring input:\n${JSON.stringify(payload, null, 2)}`,
+      payload,
+      "score-debug"
+    );
+  }
 }
 
 export class CodexVoteJudge implements VoteJudge {
@@ -250,6 +325,7 @@ export class CodexVoteJudge implements VoteJudge {
       input.incumbentEvidence,
       input.candidateEvidence
     );
+    const prompt = this.buildPrompt(input);
     const args = [
       "exec",
       "--skip-git-repo-check",
@@ -262,8 +338,9 @@ export class CodexVoteJudge implements VoteJudge {
       "-o",
       outputPath,
       ...imagePaths.flatMap((imagePath) => ["--image", imagePath]),
-      this.buildPrompt(input)
+      prompt
     ];
+    this.logDebugInput(input, prompt, imagePaths, args);
 
     if (this.verbose) {
       this.logger.debug(`codex ${args.join(" ")}`);
@@ -384,6 +461,38 @@ export class CodexVoteJudge implements VoteJudge {
     }
 
     return { lines, nextImageIndex };
+  }
+
+  private logDebugInput(
+    input: {
+      modelId: string;
+      rubricPrompt: string;
+      incumbentEvidence: EvidenceItem[];
+      candidateEvidence: EvidenceItem[];
+    },
+    prompt: string,
+    imagePaths: string[],
+    args: string[]
+  ): void {
+    if (!isDebugScoreEnabled()) {
+      return;
+    }
+
+    const payload = {
+      provider: "codex" as const,
+      modelId: input.modelId,
+      command: ["codex", ...args],
+      prompt,
+      imagePaths,
+      incumbentEvidence: serializeEvidenceForDebug(input.incumbentEvidence),
+      candidateEvidence: serializeEvidenceForDebug(input.candidateEvidence)
+    };
+
+    this.logger.info(
+      `[score-debug] Codex scoring input:\n${JSON.stringify(payload, null, 2)}`,
+      payload,
+      "score-debug"
+    );
   }
 }
 

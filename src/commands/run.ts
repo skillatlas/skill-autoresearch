@@ -83,7 +83,7 @@ export async function runCommand(
       workspaceRoot,
       logger,
       {
-        openrouter: new OpenRouterVoteJudge(),
+        openrouter: new OpenRouterVoteJudge(logger),
         codex: new CodexVoteJudge(workspaceRoot, logger, options.verbose)
       },
       options.verbose
