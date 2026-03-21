@@ -45,23 +45,65 @@ function normalizeContainerPath(relativePath: string): string {
   return relativePath.split(path.sep).join("/");
 }
 
-function resolveTargetPathWithinWorkspace(
-  workspaceRoot: string,
+function tryResolveTargetPathWithinRoot(
+  rootPath: string,
   targetPath: string
-): string {
-  const relativeTargetPath = path.relative(workspaceRoot, targetPath);
+): string | undefined {
+  const relativeTargetPath = path.relative(rootPath, targetPath);
   if (
     relativeTargetPath.startsWith("..") ||
     path.isAbsolute(relativeTargetPath)
   ) {
-    throw new Error(
-      `Container target path ${targetPath} must be inside workspace ${workspaceRoot}.`
-    );
+    return undefined;
   }
 
   return relativeTargetPath.length > 0
     ? normalizeContainerPath(relativeTargetPath)
     : ".";
+}
+
+function resolveTargetPathWithinWorkspace(
+  workspaceRoot: string,
+  targetPath: string
+): string {
+  const resolvedTargetPath = tryResolveTargetPathWithinRoot(
+    workspaceRoot,
+    targetPath
+  );
+  if (!resolvedTargetPath) {
+    throw new Error(
+      `Container target path ${targetPath} must be inside workspace ${workspaceRoot}.`
+    );
+  }
+
+  return resolvedTargetPath;
+}
+
+function resolveDebugPrefix(
+  workspaceRoot: string,
+  execution: ContainerExecution
+): string {
+  const workspaceRelativeTargetPath = tryResolveTargetPathWithinRoot(
+    workspaceRoot,
+    execution.targetPath
+  );
+  if (workspaceRelativeTargetPath) {
+    return workspaceRelativeTargetPath === "."
+      ? path.basename(execution.targetPath) || "."
+      : workspaceRelativeTargetPath;
+  }
+
+  const containerRelativeTargetPath = tryResolveTargetPathWithinRoot(
+    execution.containerRoot,
+    execution.targetPath
+  );
+  if (containerRelativeTargetPath) {
+    return containerRelativeTargetPath === "."
+      ? path.basename(execution.targetPath) || "."
+      : containerRelativeTargetPath;
+  }
+
+  return path.basename(execution.targetPath) || execution.label;
 }
 
 function quoteCommandArg(value: string): string {
@@ -195,10 +237,9 @@ export class CodeContainerRunner implements ContainerRunner {
       execution.harness === "claude" &&
       process.env.DEBUG_GENERATION === "1" &&
       isGenerationExecution(execution);
-    const debugPrefix = resolveTargetPathWithinWorkspace(
-      this.workspaceRoot,
-      execution.targetPath
-    );
+    const debugPrefix = debugGeneration
+      ? resolveDebugPrefix(this.workspaceRoot, execution)
+      : undefined;
 
     this.logger.phase(execution.label, { targetPath: execution.targetPath });
     if (this.verbose) {
@@ -210,9 +251,10 @@ export class CodeContainerRunner implements ContainerRunner {
       all: true,
       reject: false
     });
-    const streamedOutput = debugGeneration && subprocess.all
-      ? writePrefixedOutput(subprocess.all, debugPrefix)
-      : undefined;
+    const streamedOutput =
+      debugGeneration && subprocess.all && debugPrefix
+        ? writePrefixedOutput(subprocess.all, debugPrefix)
+        : undefined;
     const result = await subprocess;
     await streamedOutput;
 
