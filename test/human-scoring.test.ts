@@ -15,10 +15,12 @@ describe("LocalHumanReviewService", () => {
     const incumbentPath = path.join(workspaceRoot, "incumbent");
     const candidatePath = path.join(workspaceRoot, "candidate");
     const originalSkillsPath = path.join(workspaceRoot, "skills-original");
+    const previousSkillsPath = path.join(workspaceRoot, "skills-previous");
     const currentSkillsPath = path.join(workspaceRoot, "skills");
     await fs.ensureDir(incumbentPath);
     await fs.ensureDir(candidatePath);
     await fs.ensureDir(originalSkillsPath);
+    await fs.ensureDir(previousSkillsPath);
     await fs.ensureDir(currentSkillsPath);
     await fs.writeFile(
       path.join(incumbentPath, "index.html"),
@@ -33,6 +35,11 @@ describe("LocalHumanReviewService", () => {
     await fs.writeFile(
       path.join(originalSkillsPath, "SKILL.md"),
       "# Frontend Design\n\n- Original line\n- Shared line\n",
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(previousSkillsPath, "SKILL.md"),
+      "# Frontend Design\n\n- Original line\n- Draft candidate line\n- Shared line\n",
       "utf8"
     );
     await fs.writeFile(
@@ -110,6 +117,7 @@ describe("LocalHumanReviewService", () => {
     expect(shellHtml).toContain('id="incumbent-preview" hidden');
     expect(shellHtml).toContain('id="candidate-preview" hidden');
     expect(shellHtml).toContain('id="skill-diff-section" hidden');
+    expect(shellHtml).toContain('id="skill-diff-toggle"');
     expect(shellHtml).toContain('id="skill-diff-files"');
     expect(shellHtml).toContain('id="status" hidden');
     expect(shellHtml).toContain('id="queue-step"');
@@ -124,31 +132,72 @@ describe("LocalHumanReviewService", () => {
         incumbentUrl: string;
       };
       skillDiff: {
-        changedFileCount: number;
-        files: Array<{
-          path: string;
-          status: string;
-          addedLineCount: number;
-          removedLineCount: number;
-          lines: Array<{
-            type: string;
-            text: string;
-            omittedLineCount?: number;
-          }>;
-        }>;
+        visible: boolean;
+        preferredTarget: string;
+        targets: {
+          original: {
+            changedFileCount: number;
+            files: Array<{
+              path: string;
+              status: string;
+              addedLineCount: number;
+              removedLineCount: number;
+              lines: Array<{
+                type: string;
+                text: string;
+                omittedLineCount?: number;
+              }>;
+            }>;
+          };
+          previous: {
+            changedFileCount: number;
+            files: Array<{
+              path: string;
+              status: string;
+              addedLineCount: number;
+              removedLineCount: number;
+              lines: Array<{
+                type: string;
+                text: string;
+                omittedLineCount?: number;
+              }>;
+            }>;
+          };
+        };
       };
     };
     expect(session.phaseLabel).toBe("Step 1 · Scoring");
-    expect(session.skillDiff.changedFileCount).toBe(1);
-    expect(session.skillDiff.files).toHaveLength(1);
-    expect(session.skillDiff.files[0]).toMatchObject({
+    expect(session.skillDiff.visible).toBe(true);
+    expect(session.skillDiff.preferredTarget).toBe("previous");
+    expect(session.skillDiff.targets.original.changedFileCount).toBe(1);
+    expect(session.skillDiff.targets.original.files).toHaveLength(1);
+    expect(session.skillDiff.targets.original.files[0]).toMatchObject({
       path: "SKILL.md",
       status: "modified",
       addedLineCount: 1,
       removedLineCount: 0
     });
-    expect(session.skillDiff.files[0]?.lines).toEqual(
+    expect(session.skillDiff.targets.original.files[0]?.lines).toEqual(
       expect.arrayContaining([
+        expect.objectContaining({
+          type: "added",
+          text: "- Candidate line"
+        })
+      ])
+    );
+    expect(session.skillDiff.targets.previous.changedFileCount).toBe(1);
+    expect(session.skillDiff.targets.previous.files[0]).toMatchObject({
+      path: "SKILL.md",
+      status: "modified",
+      addedLineCount: 1,
+      removedLineCount: 1
+    });
+    expect(session.skillDiff.targets.previous.files[0]?.lines).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "removed",
+          text: "- Draft candidate line"
+        }),
         expect.objectContaining({
           type: "added",
           text: "- Candidate line"
@@ -243,30 +292,52 @@ describe("LocalHumanReviewService", () => {
       mode: string;
       current: unknown;
       skillDiff: {
-        changedFileCount: number;
-        files: Array<{
-          path: string;
-          status: string;
-          addedLineCount: number;
-          removedLineCount: number;
-          lines: Array<{
-            type: string;
-            text: string;
-          }>;
-        }>;
+        visible: boolean;
+        preferredTarget: string;
+        targets: {
+          original: {
+            changedFileCount: number;
+            files: Array<{
+              path: string;
+              status: string;
+              addedLineCount: number;
+              removedLineCount: number;
+              lines: Array<{
+                type: string;
+                text: string;
+              }>;
+            }>;
+          } | null;
+          previous: {
+            changedFileCount: number;
+            files: Array<{
+              path: string;
+              status: string;
+              addedLineCount: number;
+              removedLineCount: number;
+              lines: Array<{
+                type: string;
+                text: string;
+              }>;
+            }>;
+          } | null;
+        };
       };
     };
 
     expect(session.mode).toBe("running");
     expect(session.current).toBeNull();
-    expect(session.skillDiff.changedFileCount).toBe(1);
-    expect(session.skillDiff.files[0]).toMatchObject({
+    expect(session.skillDiff.visible).toBe(true);
+    expect(session.skillDiff.preferredTarget).toBe("original");
+    expect(session.skillDiff.targets.original?.changedFileCount).toBe(1);
+    expect(session.skillDiff.targets.original?.files[0]).toMatchObject({
       path: "SKILL.md",
       status: "modified",
       addedLineCount: 1,
       removedLineCount: 1
     });
-    expect(session.skillDiff.files[0]?.lines).toEqual(
+    expect(session.skillDiff.targets.previous).toBeNull();
+    expect(session.skillDiff.targets.original?.files[0]?.lines).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           type: "removed",
