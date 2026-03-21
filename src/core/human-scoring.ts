@@ -124,6 +124,28 @@ interface RubricComparisonSnapshot {
   accepted: boolean;
 }
 
+interface SessionArtifactView {
+  label: string;
+  path: string;
+  url: string | null;
+  isWinner: boolean;
+}
+
+interface SessionStepView {
+  key: string;
+  title: string;
+  stepIndex: number;
+  phaseLabel: string;
+  summary: string;
+  outcome: "current" | "accepted" | "rejected";
+  winnerLabel: string;
+  canVote: boolean;
+  incumbent: SessionArtifactView | null;
+  candidate: SessionArtifactView | null;
+  skillDiff: SessionSkillDiffState | null;
+  statusText: string;
+}
+
 const PREVIEW_VIEWPORTS = [480, 960] as const;
 const DEFAULT_PREVIEW_VIEWPORT = 960;
 const DEFAULT_PREVIEW_HEIGHT = 420;
@@ -399,6 +421,76 @@ function compactDiffLines(
   return compacted;
 }
 
+function buildSkillDiffFromDirectories(input: {
+  basePath: string;
+  baseLabel: string;
+  currentPath: string;
+  currentLabel: string;
+  compareTarget: "original" | "previous";
+  label: string;
+}): SessionSkillDiff | null {
+  if (!fs.existsSync(input.basePath) || !fs.existsSync(input.currentPath)) {
+    return null;
+  }
+
+  const filePaths = [
+    ...new Set([
+      ...listRelativeFilesSync(input.basePath),
+      ...listRelativeFilesSync(input.currentPath)
+    ])
+  ].sort((left, right) => left.localeCompare(right));
+  const files: SessionDiffFile[] = [];
+
+  for (const relativePath of filePaths) {
+    const baseFilePath = path.join(input.basePath, relativePath);
+    const currentFilePath = path.join(input.currentPath, relativePath);
+    const hasBaseFile = fs.existsSync(baseFilePath);
+    const hasCurrentFile = fs.existsSync(currentFilePath);
+
+    if (!hasBaseFile && !hasCurrentFile) {
+      continue;
+    }
+
+    const baseContent = hasBaseFile
+      ? normalizeFileContent(fs.readFileSync(baseFilePath, "utf8"))
+      : "";
+    const currentContent = hasCurrentFile
+      ? normalizeFileContent(fs.readFileSync(currentFilePath, "utf8"))
+      : "";
+
+    if (baseContent === currentContent) {
+      continue;
+    }
+
+    const rawLines = buildRawDiffLines(
+      splitFileLines(baseContent),
+      splitFileLines(currentContent)
+    );
+
+    files.push({
+      path: relativePath,
+      status:
+        !hasBaseFile ? "added" : !hasCurrentFile ? "removed" : "modified",
+      addedLineCount: rawLines.filter((line) => line.type === "added").length,
+      removedLineCount: rawLines.filter((line) => line.type === "removed").length,
+      lines: compactDiffLines(rawLines)
+    });
+  }
+
+  if (files.length === 0) {
+    return null;
+  }
+
+  return {
+    compareTarget: input.compareTarget,
+    label: input.label,
+    basePath: input.baseLabel,
+    currentPath: input.currentLabel,
+    changedFileCount: files.length,
+    files
+  };
+}
+
 async function readRequestBody(request: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = [];
 
@@ -618,6 +710,8 @@ export class LocalHumanReviewService implements HumanReviewService {
     const progress = this.buildProgress(mode);
     const candidates = this.buildCandidates();
     const currentSnapshot = this.buildCurrentSnapshot();
+    const stepViews = this.buildStepViews(mode);
+    const currentStepView = stepViews.find((view) => view.key === "current") ?? null;
 
     return {
       mode,
@@ -632,7 +726,8 @@ export class LocalHumanReviewService implements HumanReviewService {
       totalUnits: progress.total,
       current: currentSnapshot?.comparison ?? null,
       candidates,
-      skillDiff: this.buildSkillDiff()
+      skillDiff: currentStepView?.skillDiff ?? null,
+      stepViews
     };
   }
 
@@ -680,64 +775,28 @@ export class LocalHumanReviewService implements HumanReviewService {
       return null;
     }
 
-    const basePath = path.resolve(state.workspaceRoot, relativeBasePath);
-    const currentPath = path.resolve(state.workspaceRoot, "skills");
-    if (!fs.existsSync(basePath) || !fs.existsSync(currentPath)) {
-      return null;
-    }
-
-    const filePaths = [
-      ...new Set([
-        ...listRelativeFilesSync(basePath),
-        ...listRelativeFilesSync(currentPath)
-      ])
-    ].sort((left, right) => left.localeCompare(right));
-    const files: SessionDiffFile[] = [];
-
-    for (const relativePath of filePaths) {
-      const baseFilePath = path.join(basePath, relativePath);
-      const currentFilePath = path.join(currentPath, relativePath);
-      const hasBaseFile = fs.existsSync(baseFilePath);
-      const hasCurrentFile = fs.existsSync(currentFilePath);
-
-      if (!hasBaseFile && !hasCurrentFile) {
-        continue;
-      }
-
-      const baseContent = hasBaseFile
-        ? normalizeFileContent(fs.readFileSync(baseFilePath, "utf8"))
-        : "";
-      const currentContent = hasCurrentFile
-        ? normalizeFileContent(fs.readFileSync(currentFilePath, "utf8"))
-        : "";
-
-      if (baseContent === currentContent) {
-        continue;
-      }
-
-      const rawLines = buildRawDiffLines(
-        splitFileLines(baseContent),
-        splitFileLines(currentContent)
-      );
-
-      files.push({
-        path: relativePath,
-        status:
-          !hasBaseFile ? "added" : !hasCurrentFile ? "removed" : "modified",
-        addedLineCount: rawLines.filter((line) => line.type === "added").length,
-        removedLineCount: rawLines.filter((line) => line.type === "removed").length,
-        lines: compactDiffLines(rawLines)
-      });
-    }
-
-    return {
+    return buildSkillDiffFromDirectories({
+      basePath: path.resolve(state.workspaceRoot, relativeBasePath),
+      baseLabel: relativeBasePath,
+      currentPath: path.resolve(state.workspaceRoot, "skills"),
+      currentLabel: "skills",
       compareTarget,
-      label,
-      basePath: relativeBasePath,
-      currentPath: "skills",
-      changedFileCount: files.length,
-      files
-    };
+      label
+    });
+  }
+
+  private buildHistoricalSkillDiff(
+    baseArtifactPath: string,
+    candidateArtifactPath: string
+  ): SessionSkillDiff | null {
+    return buildSkillDiffFromDirectories({
+      basePath: path.join(baseArtifactPath, "skills"),
+      baseLabel: this.relativeToWorkspace(path.join(baseArtifactPath, "skills")),
+      currentPath: path.join(candidateArtifactPath, "skills"),
+      currentLabel: this.relativeToWorkspace(path.join(candidateArtifactPath, "skills")),
+      compareTarget: "previous",
+      label: "step snapshot"
+    });
   }
 
   private getMode(): "starting" | "running" | "review" | "completed" | "failed" {
@@ -1069,6 +1128,258 @@ export class LocalHumanReviewService implements HumanReviewService {
       })[0];
   }
 
+  private buildStepViews(
+    mode: ReturnType<typeof this.getMode>
+  ): SessionStepView[] {
+    const currentStepView = this.buildCurrentStepView(mode);
+    const historicalStepViews = this.buildHistoricalStepViews();
+
+    return currentStepView ? [currentStepView, ...historicalStepViews] : historicalStepViews;
+  }
+
+  private buildCurrentStepView(
+    mode: ReturnType<typeof this.getMode>
+  ): SessionStepView | null {
+    const state = this.latestState;
+    if (!state) {
+      return null;
+    }
+
+    const currentSnapshot = this.buildCurrentSnapshot();
+    const comparison = currentSnapshot?.comparison ?? null;
+
+    return {
+      key: "current",
+      title: "Current",
+      stepIndex: state.stepIndex,
+      phaseLabel: this.describePhase(),
+      summary: this.describeSummary(mode),
+      outcome: "current",
+      winnerLabel:
+        comparison?.votingEnabled ? "Live vote in progress" : "Following run progress",
+      canVote: comparison?.votingEnabled ?? false,
+      incumbent:
+        comparison
+          ? {
+              label: "Incumbent",
+              path: comparison.incumbentPath,
+              url: `${this.baseUrl}/artifact/current-incumbent/`,
+              isWinner: false
+            }
+          : null,
+      candidate:
+        comparison
+          ? {
+              label: comparison.candidateLabel,
+              path: comparison.candidatePath,
+              url: `${this.baseUrl}/artifact/current-candidate-${comparison.candidateIndex}/`,
+              isWinner: false
+            }
+          : null,
+      skillDiff: this.buildSkillDiff(),
+      statusText:
+        comparison?.statusLabel ?? "Select Current to follow progress as the run advances."
+    };
+  }
+
+  private buildHistoricalStepViews(): SessionStepView[] {
+    const state = this.latestState;
+    if (!state || !this.baseUrl) {
+      return [];
+    }
+
+    const baselinePath = path.join(state.workspaceRoot, "steps", "0", "baseline");
+    let incumbentBeforePath = baselinePath;
+
+    return state.history.map((entry) => {
+      const view = this.buildHistoricalStepView(entry, incumbentBeforePath);
+      incumbentBeforePath = this.resolveWorkspacePath(entry.incumbentPath);
+      return view;
+    });
+  }
+
+  private buildHistoricalStepView(
+    entry: RunState["history"][number],
+    incumbentBeforePath: string
+  ): SessionStepView {
+    const comparisonArtifact = this.resolveHistoricalComparisonArtifact(entry);
+    const outcome = entry.accepted ? "accepted" : "rejected";
+    const promotedLabel =
+      entry.promotedCandidateIndex === undefined
+        ? "Mutated artifact promoted"
+        : `Candidate ${entry.promotedCandidateIndex} promoted`;
+    const winnerLabel = entry.accepted ? promotedLabel : "Incumbent kept";
+    const candidateLabel =
+      entry.accepted &&
+      comparisonArtifact !== null &&
+      comparisonArtifact.index !== null
+        ? `Candidate ${comparisonArtifact.index}`
+        : "Mutated artifact";
+    const historicalSkillDiff =
+      comparisonArtifact === null
+        ? null
+        : this.buildHistoricalSkillDiff(incumbentBeforePath, comparisonArtifact.path);
+
+    return {
+      key: `step-${entry.stepIndex}`,
+      title: `Step ${entry.stepIndex}`,
+      stepIndex: entry.stepIndex,
+      phaseLabel: `Step ${entry.stepIndex} · ${entry.accepted ? "Accepted" : "Rejected"}`,
+      summary: entry.accepted
+        ? `${winnerLabel}. ${entry.winningCandidateIndexes.length} of ${this.latestState?.candidateCount ?? 0} candidate${this.latestState?.candidateCount === 1 ? "" : "s"} beat the incumbent.`
+        : `Mutation rejected. ${entry.winningCandidateIndexes.length} of ${this.latestState?.candidateCount ?? 0} candidate${this.latestState?.candidateCount === 1 ? "" : "s"} beat the incumbent.`,
+      outcome,
+      winnerLabel,
+      canVote: false,
+      incumbent: this.baseUrl
+        ? {
+            label: "Incumbent",
+            path: incumbentBeforePath,
+            url: `${this.baseUrl}/artifact/step-${entry.stepIndex}-incumbent/`,
+            isWinner: !entry.accepted
+          }
+        : null,
+      candidate:
+        comparisonArtifact && this.baseUrl
+          ? {
+              label: candidateLabel,
+              path: comparisonArtifact.path,
+              url: `${this.baseUrl}/artifact/step-${entry.stepIndex}-candidate/`,
+              isWinner: entry.accepted
+            }
+          : null,
+      skillDiff:
+        historicalSkillDiff === null
+          ? null
+          : {
+              visible: true,
+              preferredTarget: "previous",
+              targets: {
+                original: null,
+                previous: historicalSkillDiff
+              }
+            },
+      statusText: `Winner: ${winnerLabel}.`
+    };
+  }
+
+  private resolveHistoricalComparisonArtifact(
+    entry: RunState["history"][number]
+  ): { index: number | null; path: string } | null {
+    const state = this.latestState;
+    if (!state) {
+      return null;
+    }
+
+    const preferredIndexes =
+      entry.accepted && entry.promotedCandidateIndex !== undefined
+        ? [entry.promotedCandidateIndex]
+        : entry.winningCandidateIndexes;
+    const allCandidateIndexes = Array.from({ length: state.candidateCount }, (_, index) => index);
+    const candidateIndexes = [...new Set([...preferredIndexes, ...allCandidateIndexes])];
+
+    if (entry.accepted && entry.promotedCandidatePath) {
+      const promotedCandidatePath = this.resolveWorkspacePath(entry.promotedCandidatePath);
+      if (fs.existsSync(promotedCandidatePath)) {
+        return {
+          index: entry.promotedCandidateIndex ?? null,
+          path: promotedCandidatePath
+        };
+      }
+    }
+
+    for (const candidateIndex of candidateIndexes) {
+      const candidatePath = this.resolveWorkspacePath(
+        path.join("steps", String(entry.stepIndex), "candidates", String(candidateIndex))
+      );
+      if (fs.existsSync(candidatePath)) {
+        return {
+          index: candidateIndex,
+          path: candidatePath
+        };
+      }
+    }
+
+    return null;
+  }
+
+  private relativeToWorkspace(targetPath: string): string {
+    const state = this.latestState;
+    if (!state) {
+      return targetPath;
+    }
+
+    return path.relative(state.workspaceRoot, targetPath).split(path.sep).join("/");
+  }
+
+  private resolveWorkspacePath(relativePath: string): string {
+    const state = this.latestState;
+    if (!state) {
+      return relativePath;
+    }
+
+    return path.resolve(state.workspaceRoot, relativePath);
+  }
+
+  private resolveArtifactRef(artifactId: string): ArtifactRef | null {
+    const currentSnapshot = this.buildCurrentSnapshot();
+    if (artifactId === "current-incumbent") {
+      return currentSnapshot?.artifacts.get("incumbent") ?? null;
+    }
+
+    if (artifactId.startsWith("current-candidate-")) {
+      const candidateIndex = Number(artifactId.replace("current-candidate-", ""));
+      if (!Number.isInteger(candidateIndex) || candidateIndex < 0) {
+        return null;
+      }
+
+      return currentSnapshot?.artifacts.get(`candidate-${candidateIndex}`) ?? null;
+    }
+
+    const historicalArtifactMatch = /^step-(\d+)-(incumbent|candidate)$/.exec(artifactId);
+    if (!historicalArtifactMatch) {
+      return (
+        currentSnapshot?.artifacts.get(artifactId) ??
+        this.activeReview?.artifacts.get(artifactId) ??
+        null
+      );
+    }
+
+    const [, rawStepIndex, artifactRole] = historicalArtifactMatch;
+    const stepIndex = Number(rawStepIndex);
+    const state = this.latestState;
+    if (!state || !Number.isInteger(stepIndex) || stepIndex <= 0) {
+      return null;
+    }
+
+    const historyIndex = state.history.findIndex((entry) => entry.stepIndex === stepIndex);
+    if (historyIndex < 0) {
+      return null;
+    }
+
+    const entry = state.history[historyIndex];
+    const incumbentBeforePath =
+      historyIndex === 0
+        ? path.join(state.workspaceRoot, "steps", "0", "baseline")
+        : this.resolveWorkspacePath(state.history[historyIndex - 1]!.incumbentPath);
+    if (artifactRole === "incumbent") {
+      return {
+        label: "Incumbent",
+        path: incumbentBeforePath
+      };
+    }
+
+    const comparisonArtifact = this.resolveHistoricalComparisonArtifact(entry);
+    if (!comparisonArtifact) {
+      return null;
+    }
+
+    return {
+      label: entry.accepted ? `Candidate ${comparisonArtifact.index ?? ""}`.trim() : "Mutated artifact",
+      path: comparisonArtifact.path
+    };
+  }
+
   private logPendingComparison(): void {
     if (!this.activeReview) {
       return;
@@ -1238,8 +1549,7 @@ export class LocalHumanReviewService implements HumanReviewService {
     artifactId: string,
     rawArtifactPath: string
   ): Promise<void> {
-    const artifacts = this.buildCurrentSnapshot()?.artifacts;
-    const artifact = artifacts?.get(artifactId);
+    const artifact = this.resolveArtifactRef(artifactId);
     if (!artifact) {
       sendHtml(response, 404, "<h1>Artifact not found.</h1>");
       return;
@@ -1459,6 +1769,83 @@ export class LocalHumanReviewService implements HumanReviewService {
         font-size: 14px;
       }
 
+      .step-browser {
+        display: grid;
+        gap: 16px;
+        padding: 20px;
+        background: rgba(255, 252, 247, 0.94);
+        border: 1px solid var(--line);
+        box-shadow: var(--shadow);
+      }
+
+      .step-browser-copy {
+        margin: 0;
+        max-width: 72ch;
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.6;
+      }
+
+      .step-tabs {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      }
+
+      .step-tab {
+        display: grid;
+        gap: 8px;
+        padding: 16px;
+        text-align: left;
+        border-color: var(--line);
+        background: rgba(255, 255, 255, 0.74);
+        color: var(--ink);
+      }
+
+      .step-tab[aria-pressed="true"] {
+        border-color: var(--accent-strong);
+        background:
+          linear-gradient(135deg, rgba(180, 63, 40, 0.1), transparent 72%),
+          rgba(255, 248, 243, 0.94);
+      }
+
+      .step-tab[data-outcome="accepted"] {
+        border-left: 4px solid #1c6037;
+      }
+
+      .step-tab[data-outcome="rejected"] {
+        border-left: 4px solid #8b2020;
+      }
+
+      .step-tab[data-outcome="current"] {
+        border-left: 4px solid var(--accent-strong);
+      }
+
+      .step-tab-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .step-tab-title strong {
+        font-size: 17px;
+      }
+
+      .step-tab-outcome {
+        color: var(--muted);
+        font-family: "Courier New", monospace;
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .step-tab-meta {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.5;
+      }
+
       .workspace {
         display: grid;
         gap: 20px;
@@ -1489,10 +1876,40 @@ export class LocalHumanReviewService implements HumanReviewService {
         gap: 4px;
       }
 
+      .panel-title-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
       .panel-title {
         margin: 0;
         font-size: 24px;
         line-height: 1.1;
+      }
+
+      .panel-badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 5px 8px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.76);
+        font-family: "Courier New", monospace;
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .panel-badge[data-tone="winner"] {
+        border-color: rgba(28, 96, 55, 0.24);
+        color: #1c6037;
+        background: rgba(28, 96, 55, 0.08);
+      }
+
+      .panel-badge[data-tone="loser"] {
+        border-color: rgba(139, 32, 32, 0.22);
+        color: #8b2020;
+        background: rgba(139, 32, 32, 0.08);
       }
 
       .panel-actions {
@@ -1941,6 +2358,14 @@ export class LocalHumanReviewService implements HumanReviewService {
         </aside>
       </section>
 
+      <section class="step-browser">
+        <div>
+          <p class="eyebrow">Step viewer</p>
+          <p class="step-browser-copy">Select Current to follow the live step, or pin any completed step to inspect its winner, artifact pair, and skill diff without auto-advancing.</p>
+        </div>
+        <div class="step-tabs" id="step-tabs"></div>
+      </section>
+
       <section class="controls">
         <div class="controls-copy">
           <strong id="prompt-title">Loading\u2026</strong>
@@ -1959,7 +2384,10 @@ export class LocalHumanReviewService implements HumanReviewService {
         <article class="panel">
           <header class="panel-header">
             <div class="panel-heading">
-              <h2 class="panel-title">Incumbent</h2>
+              <div class="panel-title-row">
+                <h2 class="panel-title">Incumbent</h2>
+                <span class="panel-badge" id="incumbent-badge" hidden></span>
+              </div>
             </div>
             <div class="panel-actions">
               <a class="link-button" id="open-incumbent" href="#" target="_blank" rel="noreferrer" data-variant="secondary" aria-disabled="true">Open</a>
@@ -1978,7 +2406,10 @@ export class LocalHumanReviewService implements HumanReviewService {
         <article class="panel">
           <header class="panel-header">
             <div class="panel-heading">
-              <h2 class="panel-title" id="candidate-label">Candidate</h2>
+              <div class="panel-title-row">
+                <h2 class="panel-title" id="candidate-label">Candidate</h2>
+                <span class="panel-badge" id="candidate-badge" hidden></span>
+              </div>
             </div>
             <div class="panel-actions">
               <a class="link-button" id="open-candidate" href="#" target="_blank" rel="noreferrer" data-variant="secondary" aria-disabled="true">Open</a>
@@ -2000,7 +2431,7 @@ export class LocalHumanReviewService implements HumanReviewService {
         <div class="diff-header">
           <p class="eyebrow">Skill diff</p>
           <div class="diff-header-row">
-            <h2 class="diff-title">Current skills diff</h2>
+            <h2 class="diff-title" id="skill-diff-title">Current skill diff</h2>
             <div class="diff-header-tools">
               <div class="diff-toggle" id="skill-diff-toggle" role="group" aria-label="Skill diff comparison target" hidden></div>
               <div class="diff-summary" id="skill-diff-summary"></div>
@@ -2019,6 +2450,7 @@ export class LocalHumanReviewService implements HumanReviewService {
       const queueSummary = document.getElementById("queue-summary");
       const queueList = document.getElementById("queue-list");
       const progressFill = document.getElementById("progress-fill");
+      const stepTabs = document.getElementById("step-tabs");
       const promptTitle = document.getElementById("prompt-title");
       const promptMeta = document.getElementById("prompt-meta");
       const previewControls = document.getElementById("preview-controls");
@@ -2026,6 +2458,8 @@ export class LocalHumanReviewService implements HumanReviewService {
       const incumbentPath = document.getElementById("incumbent-path");
       const candidatePath = document.getElementById("candidate-path");
       const candidateLabel = document.getElementById("candidate-label");
+      const incumbentBadge = document.getElementById("incumbent-badge");
+      const candidateBadge = document.getElementById("candidate-badge");
       const incumbentPreview = document.getElementById("incumbent-preview");
       const candidatePreview = document.getElementById("candidate-preview");
       const incumbentWrap = document.getElementById("incumbent-wrap");
@@ -2038,6 +2472,7 @@ export class LocalHumanReviewService implements HumanReviewService {
       const voteCandidate = document.getElementById("vote-candidate");
       const skillDiffSection = document.getElementById("skill-diff-section");
       const skillDiffToggle = document.getElementById("skill-diff-toggle");
+      const skillDiffTitle = document.getElementById("skill-diff-title");
       const skillDiffSummary = document.getElementById("skill-diff-summary");
       const skillDiffPaths = document.getElementById("skill-diff-paths");
       const skillDiffFiles = document.getElementById("skill-diff-files");
@@ -2050,6 +2485,7 @@ export class LocalHumanReviewService implements HumanReviewService {
       const DEFAULT_VIEWPORT_WIDTH = ${DEFAULT_PREVIEW_VIEWPORT};
       const DEFAULT_FRAME_HEIGHT = ${DEFAULT_PREVIEW_HEIGHT};
       let currentSession = null;
+      let selectedStepKey = "current";
       let viewportWidth = loadViewportWidth();
       let selectedSkillDiffTarget = loadSkillDiffTarget();
       const previewFrames = [
@@ -2182,9 +2618,10 @@ export class LocalHumanReviewService implements HumanReviewService {
         candidateLabel.textContent = "Candidate";
         clearPreviewFrame(previewFrames[0]);
         clearPreviewFrame(previewFrames[1]);
-        openIncumbent.href = "#";
-        openCandidate.href = "#";
-        setOpenLinksEnabled(false);
+        setPanelBadge(incumbentBadge, "", "");
+        setPanelBadge(candidateBadge, "", "");
+        setOpenLink(openIncumbent, null);
+        setOpenLink(openCandidate, null);
       }
 
       function pluralize(count, singular, plural) {
@@ -2201,10 +2638,39 @@ export class LocalHumanReviewService implements HumanReviewService {
         return pill;
       }
 
-      function clearSkillDiff() {
+      function setOpenLink(link, url) {
+        link.href = url || "#";
+        link.setAttribute("aria-disabled", url ? "false" : "true");
+      }
+
+      function setStatusText(message) {
+        status.hidden = !message;
+        status.textContent = message || "";
+      }
+
+      function setVoteVisibility(visible) {
+        voteIncumbent.hidden = !visible;
+        voteCandidate.hidden = !visible;
+      }
+
+      function setPanelBadge(element, text, tone) {
+        if (!text) {
+          element.hidden = true;
+          element.textContent = "";
+          delete element.dataset.tone;
+          return;
+        }
+
+        element.hidden = false;
+        element.textContent = text;
+        element.dataset.tone = tone;
+      }
+
+      function clearSkillDiff(title) {
         skillDiffSection.hidden = true;
         skillDiffToggle.hidden = true;
         skillDiffToggle.innerHTML = "";
+        skillDiffTitle.textContent = title || "Skill diff";
         skillDiffSummary.textContent = "";
         skillDiffPaths.textContent = "";
         skillDiffFiles.innerHTML = "";
@@ -2252,32 +2718,35 @@ export class LocalHumanReviewService implements HumanReviewService {
           button.addEventListener("click", () => {
             selectedSkillDiffTarget = target;
             saveSkillDiffTarget(target);
-            renderSkillDiff(currentSession ? currentSession.skillDiff : null);
+            if (currentSession) {
+              render(currentSession);
+            }
           });
           skillDiffToggle.appendChild(button);
         }
       }
 
-      function renderSkillDiff(skillDiff) {
+      function renderSkillDiff(skillDiff, title) {
         if (!skillDiff || !skillDiff.visible) {
-          clearSkillDiff();
+          clearSkillDiff(title);
           return;
         }
 
         const activeTarget = resolveSkillDiffTarget(skillDiff);
         if (!activeTarget) {
-          clearSkillDiff();
+          clearSkillDiff(title);
           return;
         }
 
         const activeDiff = skillDiff.targets[activeTarget];
         if (!activeDiff) {
-          clearSkillDiff();
+          clearSkillDiff(title);
           return;
         }
 
         skillDiffSection.hidden = false;
         renderSkillDiffToggle(skillDiff, activeTarget);
+        skillDiffTitle.textContent = title;
         skillDiffSummary.textContent =
           activeDiff.changedFileCount +
           " " +
@@ -2379,16 +2848,133 @@ export class LocalHumanReviewService implements HumanReviewService {
         }
       }
 
+      function getStepViews(session) {
+        return Array.isArray(session?.stepViews) ? session.stepViews : [];
+      }
+
+      function ensureSelectedStep(session) {
+        const stepViews = getStepViews(session);
+        if (stepViews.some((view) => view.key === selectedStepKey)) {
+          return;
+        }
+
+        selectedStepKey = stepViews.some((view) => view.key === "current")
+          ? "current"
+          : stepViews[0]?.key || "current";
+      }
+
+      function getSelectedStepView(session) {
+        ensureSelectedStep(session);
+        return getStepViews(session).find((view) => view.key === selectedStepKey) || null;
+      }
+
+      function renderStepTabs(session) {
+        const stepViews = getStepViews(session);
+        stepTabs.innerHTML = "";
+
+        for (const view of stepViews) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "step-tab";
+          button.dataset.outcome = view.outcome;
+          button.setAttribute("aria-pressed", view.key === selectedStepKey ? "true" : "false");
+          button.addEventListener("click", () => {
+            selectedStepKey = view.key;
+            if (currentSession) {
+              render(currentSession);
+            }
+          });
+
+          const title = document.createElement("div");
+          title.className = "step-tab-title";
+
+          const heading = document.createElement("strong");
+          heading.textContent = view.title;
+
+          const outcome = document.createElement("span");
+          outcome.className = "step-tab-outcome";
+          outcome.textContent = view.outcome === "current" ? "live" : view.outcome;
+
+          const meta = document.createElement("div");
+          meta.className = "step-tab-meta";
+          meta.textContent = view.phaseLabel;
+
+          const detail = document.createElement("div");
+          detail.className = "step-tab-meta";
+          detail.textContent = view.winnerLabel;
+
+          title.appendChild(heading);
+          title.appendChild(outcome);
+          button.appendChild(title);
+          button.appendChild(meta);
+          button.appendChild(detail);
+          stepTabs.appendChild(button);
+        }
+      }
+
       function setPreviewVisibility(visible) {
         previewControls.hidden = !visible;
         reviewWorkspace.hidden = !visible;
         incumbentPreview.hidden = !visible;
         candidatePreview.hidden = !visible;
-        status.hidden = !visible;
 
         if (visible) {
           layoutPreviewFrames();
         }
+      }
+
+      function renderSelectedStep(view) {
+        const diffTitle = (view?.title || "Current") + " skill diff";
+        promptTitle.textContent = view?.phaseLabel || "Loading\u2026";
+        promptMeta.textContent = view?.summary || "";
+        renderSkillDiff(view?.skillDiff || null, diffTitle);
+
+        const incumbentView = view?.incumbent || null;
+        const candidateView = view?.candidate || null;
+        const canPreview =
+          Boolean(incumbentView?.url) &&
+          Boolean(candidateView?.url);
+
+        if (!canPreview || !incumbentView || !candidateView) {
+          setPreviewVisibility(false);
+          clearFrames();
+          setVotingEnabled(false);
+          setVoteVisibility(false);
+          setStatusText(view?.statusText || "");
+          return;
+        }
+
+        candidateLabel.textContent = candidateView.label || "Candidate";
+        incumbentPath.textContent = incumbentView.path || "";
+        candidatePath.textContent = candidateView.path || "";
+        resetPreviewFrame(previewFrames[0]);
+        resetPreviewFrame(previewFrames[1]);
+        setPreviewVisibility(true);
+        incumbentFrame.src = incumbentView.url;
+        candidateFrame.src = candidateView.url;
+        setOpenLink(openIncumbent, incumbentView.url);
+        setOpenLink(openCandidate, candidateView.url);
+        setVotingEnabled(Boolean(view?.canVote));
+        setVoteVisibility(Boolean(view?.canVote));
+        setPanelBadge(
+          incumbentBadge,
+          view?.outcome === "current"
+            ? ""
+            : incumbentView.isWinner
+              ? "Won"
+              : "Lost",
+          incumbentView.isWinner ? "winner" : "loser"
+        );
+        setPanelBadge(
+          candidateBadge,
+          view?.outcome === "current"
+            ? ""
+            : candidateView.isWinner
+              ? "Won"
+              : "Lost",
+          candidateView.isWinner ? "winner" : "loser"
+        );
+        setStatusText(view?.statusText || "");
       }
 
       function render(session) {
@@ -2408,31 +2994,8 @@ export class LocalHumanReviewService implements HumanReviewService {
           queueList.appendChild(item);
         }
 
-        promptTitle.textContent = session.phaseLabel;
-        promptMeta.textContent = session.summary;
-        renderSkillDiff(session.skillDiff);
-
-        if (!session.current) {
-          setPreviewVisibility(false);
-          clearFrames();
-          setVotingEnabled(false);
-          return;
-        }
-
-        candidateLabel.textContent = session.current.candidateLabel;
-        incumbentPath.textContent = session.current.incumbentPath;
-        candidatePath.textContent = session.current.candidatePath;
-        resetPreviewFrame(previewFrames[0]);
-        resetPreviewFrame(previewFrames[1]);
-        setPreviewVisibility(true);
-        incumbentFrame.src = session.current.incumbentUrl;
-        candidateFrame.src = session.current.candidateUrl;
-        openIncumbent.href = session.current.incumbentUrl;
-        openCandidate.href = session.current.candidateUrl;
-        setOpenLinksEnabled(true);
-        setVotingEnabled(session.current.votingEnabled);
-        status.hidden = false;
-        status.textContent = session.current.statusLabel;
+        renderStepTabs(session);
+        renderSelectedStep(getSelectedStepView(session));
       }
 
       async function loadInitialSession() {

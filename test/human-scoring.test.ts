@@ -526,4 +526,176 @@ describe("LocalHumanReviewService", () => {
 
     await service.close();
   });
+
+  it("publishes completed step views with the winning outcome and step diff", async () => {
+    const workspaceRoot = await fs.mkdtemp(
+      path.join(os.tmpdir(), "skill-autoresearch-human-scoring-")
+    );
+    const baselinePath = path.join(workspaceRoot, "steps", "0", "baseline");
+    const candidatePath = path.join(workspaceRoot, "steps", "1", "candidates", "0");
+    const originalSkillsPath = path.join(workspaceRoot, "skills-original");
+    const previousSkillsPath = path.join(workspaceRoot, "skills-previous");
+    const currentSkillsPath = path.join(workspaceRoot, "skills");
+    await fs.ensureDir(path.join(baselinePath, "skills"));
+    await fs.ensureDir(path.join(candidatePath, "skills"));
+    await fs.ensureDir(originalSkillsPath);
+    await fs.ensureDir(previousSkillsPath);
+    await fs.ensureDir(currentSkillsPath);
+    await fs.writeFile(
+      path.join(baselinePath, "index.html"),
+      "<!doctype html><html><body><main>Baseline</main></body></html>",
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(candidatePath, "index.html"),
+      "<!doctype html><html><body><main>Mutated</main></body></html>",
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(baselinePath, "skills", "SKILL.md"),
+      "# Demo\n\n- Baseline line\n- Shared line\n",
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(candidatePath, "skills", "SKILL.md"),
+      "# Demo\n\n- Baseline line\n- Mutated line\n- Shared line\n",
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(originalSkillsPath, "SKILL.md"),
+      "# Demo\n\n- Original line\n",
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(previousSkillsPath, "SKILL.md"),
+      "# Demo\n\n- Baseline line\n- Shared line\n",
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(currentSkillsPath, "SKILL.md"),
+      "# Demo\n\n- Baseline line\n- Shared line\n",
+      "utf8"
+    );
+
+    let openedUrlResolve: ((url: string) => void) | undefined;
+    const openedUrl = new Promise<string>((resolve) => {
+      openedUrlResolve = resolve;
+    });
+    const service = new LocalHumanReviewService(new Logger(false), {
+      async open(url: string): Promise<void> {
+        openedUrlResolve?.(url);
+      }
+    });
+
+    await service.startRun({
+      version: 1,
+      runId: "run-3",
+      workspaceRoot,
+      scoringMode: "human",
+      status: "running",
+      stepIndex: 2,
+      candidateCount: 1,
+      voteCount: 1,
+      minSteps: 0,
+      maxSteps: 2,
+      consecutiveRejections: 1,
+      archivePath: "archive/run-3",
+      skillsOriginalPath: "skills-original",
+      skillsPreviousPath: "skills-previous",
+      incumbentPath: "steps/0/baseline",
+      currentPhase: "snapshot",
+      activeCandidates: [],
+      history: [
+        {
+          timestamp: "2026-03-21T10:00:00.000Z",
+          stepIndex: 1,
+          accepted: false,
+          incumbentPath: "steps/0/baseline",
+          winningCandidateIndexes: [],
+          consecutiveRejections: 1
+        }
+      ]
+    });
+
+    const baseUrl = await openedUrl;
+    const sessionResponse = await fetch(`${baseUrl}/api/session`);
+    const session = (await sessionResponse.json()) as {
+      stepViews: Array<{
+        key: string;
+        outcome: string;
+        winnerLabel: string;
+        candidate: {
+          label: string;
+          url: string;
+          isWinner: boolean;
+        } | null;
+        incumbent: {
+          url: string;
+          isWinner: boolean;
+        } | null;
+        skillDiff: {
+          visible: boolean;
+          preferredTarget: string;
+          targets: {
+            original: null;
+            previous: {
+              basePath: string;
+              currentPath: string;
+              files: Array<{
+                path: string;
+                lines: Array<{
+                  type: string;
+                  text: string;
+                }>;
+              }>;
+            } | null;
+          };
+        } | null;
+      }>;
+    };
+
+    expect(session.stepViews.map((view) => view.key)).toEqual(["current", "step-1"]);
+    const historicalView = session.stepViews[1];
+    expect(historicalView).toMatchObject({
+      key: "step-1",
+      outcome: "rejected",
+      winnerLabel: "Incumbent kept",
+      candidate: {
+        label: "Mutated artifact",
+        isWinner: false
+      },
+      incumbent: {
+        isWinner: true
+      },
+      skillDiff: {
+        visible: true,
+        preferredTarget: "previous"
+      }
+    });
+    expect(historicalView.skillDiff?.targets.previous).toMatchObject({
+      basePath: "steps/0/baseline/skills",
+      currentPath: "steps/1/candidates/0/skills"
+    });
+    expect(historicalView.skillDiff?.targets.previous?.files[0]).toMatchObject({
+      path: "SKILL.md"
+    });
+    expect(historicalView.skillDiff?.targets.previous?.files[0]?.lines).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "added",
+          text: "- Mutated line"
+        })
+      ])
+    );
+
+    const incumbentResponse = await fetch(historicalView.incumbent?.url ?? "");
+    expect(incumbentResponse.ok).toBe(true);
+    expect(await incumbentResponse.text()).toContain("<main>Baseline</main>");
+
+    const candidateResponse = await fetch(historicalView.candidate?.url ?? "");
+    expect(candidateResponse.ok).toBe(true);
+    expect(await candidateResponse.text()).toContain("<main>Mutated</main>");
+
+    await service.close();
+  });
 });
