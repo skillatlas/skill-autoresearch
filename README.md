@@ -39,7 +39,9 @@ Runs are **resumable**: if the process is interrupted, re-run with `--resume` to
 ### Prerequisites
 
 - **Node.js** (v18+)
-- **Docker** — each candidate is generated inside an isolated Docker container via [`@botanicastudios/code-container`](https://www.npmjs.com/package/@botanicastudios/code-container). Docker must be running before you start a run.
+- **Docker** — each candidate is generated inside a Docker container via [`@botanicastudios/code-container`](https://www.npmjs.com/package/@botanicastudios/code-container). Docker must be running before you start a run.
+
+> **Note on skills and trust:** The Docker container provides an isolation boundary so that skill-driven agents don't run directly on your host machine — but it is not a security sandbox. Only use skill files you trust. Treat installing a third-party skill with the same caution you'd give to running a third-party script.
 
 ### 1. Install
 
