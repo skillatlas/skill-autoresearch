@@ -162,18 +162,29 @@ function parseCaptureScreenshotCommand(command: string):
   | { pageUrl: string; outputPath: string }
   | undefined {
   const tokens = tokenizeShellCommand(command);
-  if (!tokens || tokens.length !== 4) {
+  if (!tokens) {
     return undefined;
   }
 
-  if (tokens[0] !== "skill-autoresearch" || tokens[1] !== "capture-screenshot") {
-    return undefined;
+  if (tokens.length === 3 && tokens[0] === "capture-screenshot") {
+    return {
+      pageUrl: tokens[1],
+      outputPath: tokens[2]
+    };
   }
 
-  return {
-    pageUrl: tokens[2],
-    outputPath: tokens[3]
-  };
+  if (
+    tokens.length === 4 &&
+    tokens[0] === "skill-autoresearch" &&
+    tokens[1] === "capture-screenshot"
+  ) {
+    return {
+      pageUrl: tokens[2],
+      outputPath: tokens[3]
+    };
+  }
+
+  return undefined;
 }
 
 function inferStaticContentType(filePath: string): string {
