@@ -70,15 +70,23 @@ function parseLogicalTarget(
   workspaceRoot: string,
   execution: ContainerExecution
 ): string {
-  if (execution.label === "Baseline generation") {
-    return "steps/0/baseline";
+  const baselineMatch = execution.label.match(
+    /^Baseline generation(?: \(([^)]+)\))?$/
+  );
+  if (baselineMatch) {
+    const generationDir = baselineMatch[1]?.replace(/\.md$/, "");
+    return generationDir == null
+      ? "steps/0/baseline"
+      : `steps/0/baseline/${generationDir}`;
   }
 
   const candidateMatch = execution.label.match(
-    /^Candidate (\d+) generation for step (\d+)$/
+    /^Candidate (\d+) generation for step (\d+)(?: \(([^)]+)\))?$/
   );
   if (candidateMatch) {
-    return `steps/${candidateMatch[2]}/candidates/${candidateMatch[1]}`;
+    const generationDir = candidateMatch[3]?.replace(/\.md$/, "");
+    const candidateRoot = `steps/${candidateMatch[2]}/candidates/${candidateMatch[1]}`;
+    return generationDir == null ? candidateRoot : `${candidateRoot}/${generationDir}`;
   }
 
   return parseRelativeTarget(workspaceRoot, execution.targetPath);
@@ -130,14 +138,15 @@ export class FakeContainerRunner implements ContainerRunner {
 
     await fs.ensureDir(execution.targetPath);
 
-    if (relativeTarget === "steps/0/baseline") {
+    const baselineMatch = relativeTarget.match(/^steps\/0\/baseline(?:\/([^/]+))?$/);
+    if (baselineMatch) {
       const score =
         this.options.baselineScore ?? extractCurrentSkillVersion(this.workspaceRoot);
       await this.writeArtifact(execution.targetPath, score);
       return;
     }
 
-    const match = relativeTarget.match(/^steps\/(\d+)\/candidates\/(\d+)$/);
+    const match = relativeTarget.match(/^steps\/(\d+)\/candidates\/(\d+)(?:\/([^/]+))?$/);
     if (!match) {
       throw new Error(`Unexpected target path in fake container: ${relativeTarget}`);
     }
@@ -145,7 +154,13 @@ export class FakeContainerRunner implements ContainerRunner {
     const currentVersion = extractCurrentSkillVersion(this.workspaceRoot);
     const stepIndex = Number.parseInt(match[1], 10);
     const candidateIndex = Number.parseInt(match[2], 10);
+    const generationDir = match[3];
     const score =
+      (generationDir == null
+        ? undefined
+        : this.options.candidateScores?.[
+            `${stepIndex}:${candidateIndex}:${generationDir}`
+          ]) ??
       this.options.candidateScores?.[`${stepIndex}:${candidateIndex}`] ??
       currentVersion;
     await this.writeArtifact(execution.targetPath, score);

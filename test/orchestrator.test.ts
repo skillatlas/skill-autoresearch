@@ -25,7 +25,7 @@ function relativeTargetPath(workspaceRoot: string, targetPath: string): string {
 function isCandidateExecution(
   execution: Parameters<FakeContainerRunner["runPrompt"]>[0]
 ): boolean {
-  return /^Candidate \d+ generation for step \d+$/.test(execution.label);
+  return /^Candidate \d+ generation for step \d+(?: \([^)]+\))?$/.test(execution.label);
 }
 
 class ConcurrentCandidateRunner {
@@ -89,6 +89,111 @@ class ConcurrentVoteScorer extends FakeScorer {
 }
 
 describe("orchestrator integration", () => {
+  it("supports multiple numbered generation prompts per step", async () => {
+    const workspaceRoot = await createWorkspaceCopy();
+    await fs.remove(path.join(workspaceRoot, "GENERATION.md"));
+    await fs.writeFile(
+      path.join(workspaceRoot, "GENERATION1.md"),
+      "---\nharness: codex\n---\nGenerate the first artifact.\n",
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(workspaceRoot, "GENERATION2.md"),
+      "---\nharness: codex\n---\nGenerate the second artifact.\n",
+      "utf8"
+    );
+
+    const containerRunner = new FakeContainerRunner(workspaceRoot, {
+      candidateScores: {
+        "1:0:GENERATION1": 5,
+        "1:0:GENERATION2": 6,
+        "1:1:GENERATION1": 0,
+        "1:1:GENERATION2": 0
+      }
+    });
+
+    await runOrchestrator({
+      workspaceRoot,
+      options: {
+        candidateCount: 2,
+        voteCount: 1,
+        maxSteps: 1
+      },
+      containerRunner,
+      scorer: new FakeScorer(workspaceRoot)
+    });
+
+    const state = await readRunState(workspaceRoot);
+    expect(state.history[0]).toMatchObject({
+      accepted: false,
+      winningCandidateIndexes: [0]
+    });
+    expect(containerRunner.executions).toEqual(
+      expect.arrayContaining([
+        "steps/0/baseline/GENERATION1",
+        "steps/0/baseline/GENERATION2",
+        "steps/1/candidates/0/GENERATION1",
+        "steps/1/candidates/0/GENERATION2",
+        "steps/1/candidates/1/GENERATION1",
+        "steps/1/candidates/1/GENERATION2"
+      ])
+    );
+    expect(await fs.pathExists(path.join(workspaceRoot, "steps", "0", "baseline", "index.html"))).toBe(
+      true
+    );
+    expect(
+      await fs.pathExists(
+        path.join(workspaceRoot, "steps", "1", "candidates", "0", "GENERATION1", "index.html")
+      )
+    ).toBe(true);
+    expect(
+      await fs.pathExists(
+        path.join(workspaceRoot, "steps", "1", "candidates", "0", "GENERATION2", "index.html")
+      )
+    ).toBe(true);
+  });
+
+  it("reviews multiple numbered generation prompts in human scoring mode", async () => {
+    const workspaceRoot = await createWorkspaceCopy();
+    await fs.remove(path.join(workspaceRoot, "GENERATION.md"));
+    await fs.writeFile(
+      path.join(workspaceRoot, "GENERATION1.md"),
+      "---\nharness: codex\n---\nGenerate the first artifact.\n",
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(workspaceRoot, "GENERATION2.md"),
+      "---\nharness: codex\n---\nGenerate the second artifact.\n",
+      "utf8"
+    );
+
+    const humanReview = new FakeHumanReviewService();
+    await runOrchestrator({
+      workspaceRoot,
+      options: {
+        scoringMode: "human",
+        candidateCount: 1,
+        voteCount: 1,
+        maxSteps: 1
+      },
+      containerRunner: new FakeContainerRunner(workspaceRoot, {
+        candidateScores: {
+          "1:0:GENERATION1": 4,
+          "1:0:GENERATION2": 5
+        }
+      }),
+      scorer: new FakeScorer(workspaceRoot),
+      humanReview
+    });
+
+    const state = await readRunState(workspaceRoot);
+    expect(humanReview.sessions).toBe(2);
+    expect(state.history[0]).toMatchObject({
+      accepted: true,
+      promotedCandidateIndex: 0
+    });
+  });
+
   it("fails fast when baseline generation produces no artifacts", async () => {
     const workspaceRoot = await createWorkspaceCopy();
 
