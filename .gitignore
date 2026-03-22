@@ -9,3 +9,4 @@ steps
 archive
 .playwright-cli
 log
+tmp
