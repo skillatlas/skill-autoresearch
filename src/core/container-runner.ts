@@ -21,6 +21,9 @@ export interface ContainerRunner {
   runPrompt(execution: ContainerExecution): Promise<void>;
 }
 
+const CLAUDE_GENERATION_MAX_ATTEMPTS = 3;
+const CLAUDE_GENERATION_RETRY_DELAY_MS = 250;
+
 const require = createRequire(import.meta.url);
 const FORWARDED_ENV_VARS: Record<GenerationHarness, readonly string[]> = {
   claude: ["CLAUDE_CODE_OAUTH_TOKEN"],
@@ -39,6 +42,20 @@ function isGenerationExecution(execution: ContainerExecution): boolean {
     execution.label === "Baseline generation" ||
     execution.label.startsWith("Candidate ")
   );
+}
+
+function isRetriableClaudeGenerationFailure(output: string | undefined): boolean {
+  if (!output) {
+    return false;
+  }
+
+  return /Unexpected end of JSON input/i.test(output);
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
 }
 
 function normalizeContainerPath(relativePath: string): string {
@@ -267,36 +284,44 @@ export class CodeContainerRunner implements ContainerRunner {
   public async runPrompt(execution: ContainerExecution): Promise<void> {
     const containerCliEntryPoint = resolveContainerCliEntryPoint();
     const args = buildContainerExecArgs(containerCliEntryPoint, execution);
-    const debugGeneration =
-      execution.harness === "claude" &&
-      process.env.DEBUG_GENERATION === "1" &&
-      isGenerationExecution(execution);
-    const debugPrefix = debugGeneration
-      ? resolveDebugPrefix(this.workspaceRoot, execution)
-      : undefined;
-
     this.logger.phase(execution.label, { targetPath: execution.targetPath });
     if (this.verbose) {
       this.logger.debug(`node ${args.join(" ")}`);
     }
 
-    const subprocess = execa(process.execPath, args, {
-      cwd: this.workspaceRoot,
-      all: true,
-      reject: false
-    });
-    const streamedOutput =
-      debugGeneration && subprocess.all && debugPrefix
-        ? writePrefixedOutput(subprocess.all, debugPrefix)
+    const maxAttempts =
+      execution.harness === "claude" && isGenerationExecution(execution)
+        ? CLAUDE_GENERATION_MAX_ATTEMPTS
+        : 1;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const debugGeneration =
+        execution.harness === "claude" &&
+        process.env.DEBUG_GENERATION === "1" &&
+        isGenerationExecution(execution);
+      const debugPrefix = debugGeneration
+        ? resolveDebugPrefix(this.workspaceRoot, execution)
         : undefined;
-    const result = await subprocess;
-    await streamedOutput;
+      const subprocess = execa(process.execPath, args, {
+        cwd: this.workspaceRoot,
+        all: true,
+        reject: false
+      });
+      const streamedOutput =
+        debugGeneration && subprocess.all && debugPrefix
+          ? writePrefixedOutput(subprocess.all, debugPrefix)
+          : undefined;
+      const result = await subprocess;
+      await streamedOutput;
 
-    if (this.verbose && !debugGeneration && result.all?.trim()) {
-      this.logger.debug(result.all);
-    }
+      if (this.verbose && !debugGeneration && result.all?.trim()) {
+        this.logger.debug(result.all);
+      }
 
-    if (result.exitCode !== 0) {
+      if (result.exitCode === 0) {
+        return;
+      }
+
       const failureMessage = formatCommandFailure({
         label: "Container command",
         subject: execution.label,
@@ -304,6 +329,28 @@ export class CodeContainerRunner implements ContainerRunner {
         exitCode: result.exitCode ?? 1,
         output: result.all
       });
+      const shouldRetry =
+        attempt < maxAttempts &&
+        execution.harness === "claude" &&
+        isGenerationExecution(execution) &&
+        isRetriableClaudeGenerationFailure(result.all);
+
+      if (shouldRetry) {
+        this.logger.warn(
+          `Retrying ${execution.label} after transient Claude CLI failure (${attempt}/${maxAttempts}).`,
+          {
+            attempt,
+            maxAttempts,
+            containerRoot: execution.containerRoot,
+            targetPath: execution.targetPath,
+            harness: execution.harness,
+            output: result.all
+          },
+          "container-command-retry"
+        );
+        await delay(CLAUDE_GENERATION_RETRY_DELAY_MS);
+        continue;
+      }
 
       this.logger.error(
         failureMessage,
