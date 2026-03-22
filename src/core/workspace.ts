@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { Logger } from "./logger.js";
-import { loadGeneration } from "./generation.js";
+import { loadGenerations } from "./generation.js";
 import { ScoringMode } from "../types/state.js";
 import { GenerationSpec } from "../types/generation.js";
 
@@ -73,7 +73,7 @@ export class WorkspaceManager {
     options: { scoringMode: ScoringMode }
   ): Promise<void> {
     await this.ensureRequiredFile(this.paths.instructionsPath);
-    await this.ensureRequiredFile(this.paths.generationPath);
+    await this.loadGenerationSpecs();
     if (options.scoringMode === "rubric") {
       await this.ensureRequiredFile(this.paths.rubricPath);
     }
@@ -207,7 +207,12 @@ export class WorkspaceManager {
   }
 
   public async loadGenerationSpec(): Promise<GenerationSpec> {
-    return loadGeneration(this.paths.generationPath);
+    const generations = await this.loadGenerationSpecs();
+    return generations[0]!;
+  }
+
+  public async loadGenerationSpecs(): Promise<GenerationSpec[]> {
+    return loadGenerations(this.root);
   }
 
   private async createSandboxSkillLinks(

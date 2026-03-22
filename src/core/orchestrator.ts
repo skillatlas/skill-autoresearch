@@ -1,6 +1,8 @@
+import fs from "fs-extra";
 import path from "node:path";
 
 import { ContainerRunner } from "./container-runner.js";
+import { getGenerationArtifactSubdir } from "./generation.js";
 import { HumanReviewService } from "./human-scoring.js";
 import { Logger } from "./logger.js";
 import {
@@ -10,6 +12,7 @@ import {
 } from "./scorer.js";
 import { StateStore } from "./state-store.js";
 import { WorkspaceManager } from "./workspace.js";
+import { GenerationSpec } from "../types/generation.js";
 import { ScoreVote } from "../types/rubric.js";
 import { RunState } from "../types/state.js";
 
@@ -85,6 +88,23 @@ function formatCandidateGenerationLabel(
   candidateIndex: number
 ): string {
   return `Candidate ${candidateIndex} generation for step ${stepIndex}`;
+}
+
+function appendGenerationLabel(
+  label: string,
+  generation: GenerationSpec,
+  generationCount: number
+): string {
+  return generationCount === 1 ? label : `${label} (${generation.fileName})`;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 export class Orchestrator {
@@ -214,14 +234,18 @@ export class Orchestrator {
     const archivePath = await this.workspace.archiveExistingSteps(previewRunId, {
       dryRun: true
     });
-    const generation = await this.workspace.loadGenerationSpec();
+    const generations = await this.workspace.loadGenerationSpecs();
+    const harnesses = [...new Set(generations.map((generation) => generation.harness))];
 
     this.logger.info(`Dry run for workspace ${this.workspace.root}`);
     this.logger.info(`Run ID: ${previewRunId}`);
     this.logger.info(`Archive target: ${archivePath}`);
-    this.logger.info(`Generation harness: ${generation.harness}`);
     this.logger.info(
-      `Planned loop: baseline + ${describeMaxSteps(this.options.maxSteps)} mutation step(s), ${this.options.candidateCount} candidate(s) per step, ${this.options.voteCount} vote(s) per candidate.`
+      `Generation prompts: ${generations.map((generation) => generation.fileName).join(", ")}`
+    );
+    this.logger.info(`Generation harnesses: ${harnesses.join(", ")}`);
+    this.logger.info(
+      `Planned loop: baseline + ${describeMaxSteps(this.options.maxSteps)} mutation step(s), ${this.options.candidateCount} candidate(s) per generation prompt, ${this.options.voteCount} vote(s) per candidate comparison.`
     );
 
     if (this.options.scoringMode === "human") {
@@ -241,24 +265,11 @@ export class Orchestrator {
 
   private async generateBaseline(state: RunState): Promise<RunState> {
     const baselineDir = path.join(this.workspace.paths.stepsDir, "0", "baseline");
-    await this.workspace.resetDirectory(baselineDir);
-    const sandbox = await this.workspace.createGenerationSandbox(baselineDir);
-    const generation = await this.workspace.loadGenerationSpec();
-
-    try {
-      await this.containerRunner.runPrompt({
-        containerRoot: sandbox.containerRoot,
-        targetPath: sandbox.targetPath,
-        prompt: generation.prompt,
-        label: "Baseline generation",
-        harness: generation.harness
-      });
-      await sandbox.persistArtifacts();
-    } finally {
-      await sandbox.cleanup();
-    }
-    await this.workspace.assertDirectoryContainsFiles(baselineDir, "Baseline generation", {
-      ignoredTopLevelEntries: ["skills"]
+    const generations = await this.workspace.loadGenerationSpecs();
+    await this.generateArtifactsForPromptSet({
+      targetRoot: baselineDir,
+      generations,
+      baseLabel: "Baseline generation"
     });
 
     await this.workspace.snapshotSkills("original");
@@ -325,34 +336,17 @@ export class Orchestrator {
   }
 
   private async generateCandidates(state: RunState): Promise<RunState> {
-    const generation = await this.workspace.loadGenerationSpec();
+    const generations = await this.workspace.loadGenerationSpecs();
     const pendingCandidates = state.activeCandidates.filter(
       (candidate) => candidate.status === "pending"
     );
 
     await this.runInParallel(pendingCandidates, async (candidate) => {
       const candidateDir = this.workspace.resolveWorkspacePath(candidate.path);
-      const generationLabel = formatCandidateGenerationLabel(
-        state.stepIndex,
-        candidate.index
-      );
-      await this.workspace.resetDirectory(candidateDir);
-      const sandbox = await this.workspace.createGenerationSandbox(candidateDir);
-
-      try {
-        await this.containerRunner.runPrompt({
-          containerRoot: sandbox.containerRoot,
-          targetPath: sandbox.targetPath,
-          prompt: generation.prompt,
-          label: generationLabel,
-          harness: generation.harness
-        });
-        await sandbox.persistArtifacts();
-      } finally {
-        await sandbox.cleanup();
-      }
-      await this.workspace.assertDirectoryContainsFiles(candidateDir, generationLabel, {
-        ignoredTopLevelEntries: ["skills"]
+      await this.generateArtifactsForPromptSet({
+        targetRoot: candidateDir,
+        generations,
+        baseLabel: formatCandidateGenerationLabel(state.stepIndex, candidate.index)
       });
       candidate.status = "generated";
       await this.saveState(state);
@@ -371,51 +365,74 @@ export class Orchestrator {
       throw new Error("Cannot score candidates before an incumbent artifact exists.");
     }
 
+    const generations = await this.workspace.loadGenerationSpecs();
+    const requiredVoteCount = this.getRequiredVoteCount(generations);
+    const incumbentPath = state.incumbentPath;
+
     if (state.scoringMode === "human") {
-      return this.scoreCandidatesWithHumanReview(state);
+      return this.scoreCandidatesWithHumanReview(state, generations);
     }
 
     const rubric = await this.scorer.loadRubric(this.workspace.paths.rubricPath);
     const modelId = state.modelOverride ?? rubric.modelId;
-    const incumbentEvidence = await this.scorer.collectEvidence(
-      rubric,
-      state.incumbentPath
-    );
     const pendingCandidates = state.activeCandidates.filter(
       (candidate) =>
         !(
           candidate.status === "scored" &&
-          candidate.votes.length >= state.voteCount &&
+          candidate.votes.length >= requiredVoteCount &&
           candidate.comparison
         )
     );
 
     await this.runInParallel(pendingCandidates, async (candidate) => {
-      const candidateEvidence = await this.scorer.collectEvidence(rubric, candidate.path);
-      for (let attempt = candidate.votes.length; attempt < state.voteCount; attempt += 1) {
-        const vote = await this.scorer.runSingleVote({
-          provider: rubric.provider,
-          modelId,
-          rubricPrompt: rubric.prompt,
-          incumbentEvidence,
-          candidateEvidence
-        });
+      for (let generationIndex = 0; generationIndex < generations.length; generationIndex += 1) {
+        const generation = generations[generationIndex]!;
+        const completedVotes = this.getCompletedVotesForGeneration(
+          candidate.votes.length,
+          generationIndex
+        );
+        if (completedVotes >= state.voteCount) {
+          continue;
+        }
 
-        candidate.votes.push({
-          attempt,
-          winner: vote.winner,
-          confidence: vote.confidence,
-          rationale: vote.rationale
-        });
-        candidate.comparison = summarizeVotes(candidate.votes);
-        await this.saveState(state);
+        const incumbentEvidence = await this.scorer.collectEvidence(
+          rubric,
+          this.resolveGenerationArtifactPath(
+            incumbentPath,
+            generation,
+            generations.length
+          )
+        );
+        const candidateEvidence = await this.scorer.collectEvidence(
+          rubric,
+          this.resolveGenerationArtifactPath(candidate.path, generation, generations.length)
+        );
+
+        for (let attempt = completedVotes; attempt < state.voteCount; attempt += 1) {
+          const vote = await this.scorer.runSingleVote({
+            provider: rubric.provider,
+            modelId,
+            rubricPrompt: rubric.prompt,
+            incumbentEvidence,
+            candidateEvidence
+          });
+
+          candidate.votes.push({
+            attempt: candidate.votes.length,
+            winner: vote.winner,
+            confidence: vote.confidence,
+            rationale: vote.rationale
+          });
+          candidate.comparison = summarizeVotes(candidate.votes);
+          await this.saveState(state);
+        }
       }
 
       candidate.comparison = summarizeVotes(candidate.votes);
       candidate.status = "scored";
       await this.saveState(state);
       this.logger.info(
-        `Candidate ${candidate.index} scored ${candidate.comparison.bVotes}/${state.voteCount} vote(s) for B.`
+        `Candidate ${candidate.index} scored ${candidate.comparison.bVotes}/${requiredVoteCount} vote(s) for B.`
       );
     });
 
@@ -426,30 +443,52 @@ export class Orchestrator {
     return state;
   }
 
-  private async scoreCandidatesWithHumanReview(state: RunState): Promise<RunState> {
+  private async scoreCandidatesWithHumanReview(
+    state: RunState,
+    generations: GenerationSpec[]
+  ): Promise<RunState> {
     if (!state.incumbentPath) {
       throw new Error("Cannot score candidates before an incumbent artifact exists.");
     }
 
-    const pendingCandidates = state.activeCandidates.filter(
-      (candidate) =>
-        !(
-          candidate.status === "scored" &&
-          candidate.votes.length >= state.voteCount &&
-          candidate.comparison
-        )
-    );
+    const requiredVoteCount = this.getRequiredVoteCount(generations);
+    for (let generationIndex = 0; generationIndex < generations.length; generationIndex += 1) {
+      const generation = generations[generationIndex]!;
+      const pendingCandidates = state.activeCandidates.filter(
+        (candidate) =>
+          !(
+            candidate.status === "scored" &&
+            candidate.votes.length >= requiredVoteCount &&
+            candidate.comparison
+          ) &&
+          this.getCompletedVotesForGeneration(candidate.votes.length, generationIndex) <
+            state.voteCount
+      );
 
-    if (pendingCandidates.length > 0) {
+      if (pendingCandidates.length === 0) {
+        continue;
+      }
+
       await this.humanReview.reviewCandidates({
         runId: state.runId,
         stepIndex: state.stepIndex,
         voteCount: state.voteCount,
-        incumbentPath: this.workspace.resolveWorkspacePath(state.incumbentPath),
+        incumbentPath: this.workspace.resolveWorkspacePath(
+          this.resolveGenerationArtifactPath(
+            state.incumbentPath,
+            generation,
+            generations.length
+          )
+        ),
         candidates: pendingCandidates.map((candidate) => ({
           index: candidate.index,
-          path: this.workspace.resolveWorkspacePath(candidate.path),
-          completedVotes: candidate.votes.length
+          path: this.workspace.resolveWorkspacePath(
+            this.resolveGenerationArtifactPath(candidate.path, generation, generations.length)
+          ),
+          completedVotes: this.getCompletedVotesForGeneration(
+            candidate.votes.length,
+            generationIndex
+          )
         })),
         onVote: async ({ candidateIndex, vote }) => {
           const candidate = state.activeCandidates.find(
@@ -460,12 +499,12 @@ export class Orchestrator {
             throw new Error(`Unable to record human vote for candidate ${candidateIndex}.`);
           }
 
-          this.recordCandidateVote(candidate, vote, state.voteCount);
+          this.recordCandidateVote(candidate, vote, requiredVoteCount);
           await this.saveState(state);
 
           if (candidate.status === "scored" && candidate.comparison) {
             this.logger.info(
-              `Candidate ${candidate.index} scored ${candidate.comparison.bVotes}/${state.voteCount} vote(s) for B.`
+              `Candidate ${candidate.index} scored ${candidate.comparison.bVotes}/${requiredVoteCount} vote(s) for B.`
             );
           }
         }
@@ -570,10 +609,8 @@ export class Orchestrator {
     vote: ScoreVote,
     voteCount: number
   ): void {
-    const attempt = candidate.votes.length;
-
     candidate.votes.push({
-      attempt,
+      attempt: candidate.votes.length,
       winner: vote.winner,
       confidence: vote.confidence,
       rationale: vote.rationale
@@ -604,6 +641,147 @@ export class Orchestrator {
     }
 
     return undefined;
+  }
+
+  private getRequiredVoteCount(generations: ReadonlyArray<GenerationSpec>): number {
+    return generations.length * this.options.voteCount;
+  }
+
+  private getCompletedVotesForGeneration(
+    voteCount: number,
+    generationIndex: number
+  ): number {
+    const voteStart = generationIndex * this.options.voteCount;
+    return Math.max(0, Math.min(this.options.voteCount, voteCount - voteStart));
+  }
+
+  private resolveGenerationArtifactPath(
+    rootPath: string,
+    generation: GenerationSpec,
+    generationCount: number
+  ): string {
+    if (generationCount === 1) {
+      return rootPath;
+    }
+
+    return path.join(rootPath, getGenerationArtifactSubdir(generation));
+  }
+
+  private async generateArtifactsForPromptSet(input: {
+    targetRoot: string;
+    generations: ReadonlyArray<GenerationSpec>;
+    baseLabel: string;
+  }): Promise<void> {
+    await this.workspace.resetDirectory(input.targetRoot);
+
+    for (const generation of input.generations) {
+      const generationTarget =
+        input.generations.length === 1
+          ? input.targetRoot
+          : path.join(input.targetRoot, getGenerationArtifactSubdir(generation));
+      const label = appendGenerationLabel(
+        input.baseLabel,
+        generation,
+        input.generations.length
+      );
+      const sandbox = await this.workspace.createGenerationSandbox(generationTarget);
+
+      try {
+        await this.containerRunner.runPrompt({
+          containerRoot: sandbox.containerRoot,
+          targetPath: sandbox.targetPath,
+          prompt: generation.prompt,
+          label,
+          harness: generation.harness
+        });
+        await sandbox.persistArtifacts();
+      } finally {
+        await sandbox.cleanup();
+      }
+
+      await this.workspace.assertDirectoryContainsFiles(generationTarget, label, {
+        ignoredTopLevelEntries: ["skills"]
+      });
+    }
+
+    if (input.generations.length > 1) {
+      await this.writeGenerationManifest(input.targetRoot, input.generations);
+    }
+  }
+
+  private async writeGenerationManifest(
+    targetRoot: string,
+    generations: ReadonlyArray<GenerationSpec>
+  ): Promise<void> {
+    const links = generations
+      .map((generation) => {
+        const subdir = getGenerationArtifactSubdir(generation);
+        return `<li><a href="./${encodeURIComponent(subdir)}/">${escapeHtml(generation.fileName)}</a> <span>${escapeHtml(generation.harness)}</span></li>`;
+      })
+      .join("");
+
+    const html = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Generation Outputs</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: ui-sans-serif, system-ui, sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 32px;
+        background: #f5f7fb;
+        color: #1f2937;
+      }
+      main {
+        max-width: 720px;
+        margin: 0 auto;
+        background: #ffffff;
+        border: 1px solid #dbe4f0;
+        border-radius: 18px;
+        padding: 24px;
+        box-shadow: 0 18px 40px rgba(15, 23, 42, 0.08);
+      }
+      h1 {
+        margin: 0 0 12px;
+        font-size: 1.5rem;
+      }
+      p {
+        margin: 0 0 20px;
+        line-height: 1.5;
+      }
+      ul {
+        margin: 0;
+        padding-left: 20px;
+      }
+      li + li {
+        margin-top: 10px;
+      }
+      a {
+        color: #0f62fe;
+      }
+      span {
+        color: #526072;
+        margin-left: 8px;
+        font-size: 0.95rem;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Generation outputs</h1>
+      <p>This artifact bundle contains one output per generation prompt.</p>
+      <ul>${links}</ul>
+    </main>
+  </body>
+</html>
+`;
+
+    await fs.writeFile(path.join(targetRoot, "index.html"), html, "utf8");
   }
 
   private assertResumeOptions(state: RunState): void {
