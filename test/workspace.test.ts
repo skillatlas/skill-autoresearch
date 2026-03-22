@@ -92,4 +92,27 @@ describe("workspace sandboxes", () => {
     expect((await fs.stat(workspace.paths.stepsDir)).isDirectory()).toBe(true);
     expect((await fs.stat(workspace.paths.archiveDir)).isDirectory()).toBe(true);
   });
+
+  it("loads numbered generation prompts when GENERATION.md is absent", async () => {
+    const workspaceRoot = await createWorkspaceCopy();
+    const workspace = new WorkspaceManager(workspaceRoot, new Logger(false));
+
+    await fs.remove(path.join(workspaceRoot, "GENERATION.md"));
+    await fs.writeFile(
+      path.join(workspaceRoot, "GENERATION1.md"),
+      "---\nharness: codex\n---\nFirst prompt.\n",
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(workspaceRoot, "GENERATION2.md"),
+      "---\nharness: claude\n---\nSecond prompt.\n",
+      "utf8"
+    );
+
+    const generations = await workspace.loadGenerationSpecs();
+    expect(generations.map((generation) => generation.fileName)).toEqual([
+      "GENERATION1.md",
+      "GENERATION2.md"
+    ]);
+  });
 });
