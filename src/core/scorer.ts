@@ -808,6 +808,8 @@ export class CodexVoteJudge implements VoteJudge {
 }
 
 export class Scorer {
+  private pendingScreenshotCapture: Promise<void> = Promise.resolve();
+
   public constructor(
     private readonly workspaceRoot: string,
     private readonly logger: Logger,
@@ -964,68 +966,98 @@ export class Scorer {
     outputPath: string,
     stepPath: string
   ): Promise<void> {
-    const resolvedOutputPath = path.resolve(outputPath);
-    await fs.ensureDir(path.dirname(resolvedOutputPath));
+    return this.withScreenshotCaptureLock(async () => {
+      const resolvedOutputPath = path.resolve(outputPath);
+      await fs.ensureDir(path.dirname(resolvedOutputPath));
 
-    let lastError: Error | undefined;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const sessionId = `capture-${randomUUID()}`;
-      const output: string[] = [];
+      let lastError: Error | undefined;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const sessionId = `capture-${randomUUID()}`;
+        const output: string[] = [];
 
-      try {
-        for (const args of [
-          [`-s=${sessionId}`, "open", pageUrl],
-          [`-s=${sessionId}`, "resize", "1440", "1080"],
-          [`-s=${sessionId}`, "screenshot", "--filename", resolvedOutputPath]
-        ]) {
-          const result = await execa("playwright-cli", args, {
-            cwd: this.workspaceRoot,
-            all: true,
-            reject: false
-          });
-
-          if (this.verbose && result.all?.trim()) {
-            this.logger.debug(result.all);
-          }
-
-          if (result.all?.trim()) {
-            output.push(result.all.trim());
-          }
-
-          if (result.exitCode !== 0) {
-            throw new Error(
-              formatCommandFailure({
-                label: "Rubric command",
-                subject: stepPath,
-                command: `skill-autoresearch capture-screenshot "${pageUrl}" "${resolvedOutputPath}"`,
-                exitCode: result.exitCode ?? 1,
-                output: output.join("\n")
-              })
-            );
-          }
-        }
-
-        return;
-      } catch (error) {
-        lastError = error as Error;
-        const message = lastError.message;
-        if (!message.includes("EADDRINUSE") || attempt === 1) {
-          throw lastError;
-        }
-      } finally {
         try {
-          await execa("playwright-cli", [`-s=${sessionId}`, "close"], {
-            cwd: this.workspaceRoot,
-            all: true,
-            reject: false
-          });
-        } catch {
-          // Best effort cleanup. Any actionable error should come from the rubric command itself.
+          for (const args of [
+            [`-s=${sessionId}`, "open", pageUrl],
+            [`-s=${sessionId}`, "resize", "1440", "1080"],
+            [`-s=${sessionId}`, "screenshot", "--filename", resolvedOutputPath]
+          ]) {
+            const result = await execa("playwright-cli", args, {
+              cwd: this.workspaceRoot,
+              all: true,
+              reject: false
+            });
+
+            if (this.verbose && result.all?.trim()) {
+              this.logger.debug(result.all);
+            }
+
+            if (result.all?.trim()) {
+              output.push(result.all.trim());
+            }
+
+            if (result.exitCode !== 0) {
+              throw new Error(
+                formatCommandFailure({
+                  label: "Rubric command",
+                  subject: stepPath,
+                  command: `skill-autoresearch capture-screenshot "${pageUrl}" "${resolvedOutputPath}"`,
+                  exitCode: result.exitCode ?? 1,
+                  output: output.join("\n")
+                })
+              );
+            }
+          }
+
+          return;
+        } catch (error) {
+          lastError = error as Error;
+          if (
+            !this.isScreenshotPortCollisionError(lastError.message) ||
+            attempt === 1
+          ) {
+            throw lastError;
+          }
+        } finally {
+          try {
+            await execa("playwright-cli", [`-s=${sessionId}`, "close"], {
+              cwd: this.workspaceRoot,
+              all: true,
+              reject: false
+            });
+          } catch {
+            // Best effort cleanup. Any actionable error should come from the rubric command itself.
+          }
         }
       }
-    }
 
-    throw lastError ?? new Error(`Failed to capture screenshot for ${stepPath}.`);
+      throw lastError ?? new Error(`Failed to capture screenshot for ${stepPath}.`);
+    });
+  }
+
+  private isScreenshotPortCollisionError(message: string): boolean {
+    return (
+      message.includes("EADDRINUSE") ||
+      message.includes("Address already in use") ||
+      message.includes("Cannot start http server for devtools")
+    );
+  }
+
+  private async withScreenshotCaptureLock<T>(
+    operation: () => Promise<T>
+  ): Promise<T> {
+    const previousCapture = this.pendingScreenshotCapture;
+    let releaseCapture: (() => void) | undefined;
+    this.pendingScreenshotCapture = new Promise<void>((resolve) => {
+      releaseCapture = resolve;
+    });
+
+    await previousCapture;
+
+    try {
+      return await operation();
+    } finally {
+      releaseCapture?.();
+    }
   }
 
   private getJudge(provider: ScoringProvider): VoteJudge {
