@@ -17,6 +17,13 @@ vi.mock("execa", () => ({
   execa: execaMock
 }));
 
+const claudeCommand =
+  'tmp_home="$(mktemp -d)"; cleanup() { rm -rf "$tmp_home"; }; trap cleanup EXIT; export HOME="$tmp_home"; if [ -d /root/.claude ]; then cp -R /root/.claude "$HOME/.claude"; fi; if [ -f /root/.claude.json ]; then cp /root/.claude.json "$HOME/.claude.json"; fi; cd "$1"; claude --no-session-persistence -p "$2"';
+const claudeDebugCommand =
+  'tmp_home="$(mktemp -d)"; cleanup() { rm -rf "$tmp_home"; }; trap cleanup EXIT; export HOME="$tmp_home"; if [ -d /root/.claude ]; then cp -R /root/.claude "$HOME/.claude"; fi; if [ -f /root/.claude.json ]; then cp /root/.claude.json "$HOME/.claude.json"; fi; cd "$1"; claude --no-session-persistence --verbose --output-format stream-json -p "$2"';
+const codexCommand =
+  'tmp_home="$(mktemp -d)"; cleanup() { rm -rf "$tmp_home"; }; trap cleanup EXIT; export HOME="$tmp_home"; if [ -d /root/.codex ]; then cp -R /root/.codex "$HOME/.codex"; fi; cd "$1"; codex exec --ephemeral --skip-git-repo-check -a never --sandbox workspace-write "$2"';
+
 describe("container runner", () => {
   beforeEach(() => {
     execaMock.mockReset();
@@ -56,7 +63,7 @@ describe("container runner", () => {
       "--",
       "bash",
       "-lc",
-      'cd "$1" && claude -p "$2"',
+      claudeCommand,
       "bash",
       "steps/0/baseline",
       "Generate"
@@ -83,7 +90,7 @@ describe("container runner", () => {
       "--",
       "bash",
       "-lc",
-      'cd "$1" && claude -p "$2"',
+      claudeCommand,
       "bash",
       "steps/0/baseline",
       "Generate"
@@ -112,7 +119,7 @@ describe("container runner", () => {
       "--",
       "bash",
       "-lc",
-      'cd "$1" && claude --verbose --output-format stream-json -p "$2"',
+      claudeDebugCommand,
       "bash",
       "artifact",
       "Generate"
@@ -141,7 +148,7 @@ describe("container runner", () => {
       "--",
       "bash",
       "-lc",
-      'cd "$1" && claude -p "$2"',
+      claudeCommand,
       "bash",
       "skills",
       "Mutate"
@@ -168,7 +175,7 @@ describe("container runner", () => {
       "--",
       "bash",
       "-lc",
-      'cd "$1" && claude -p "$2"',
+      claudeCommand,
       "bash",
       ".",
       "Generate"
@@ -202,7 +209,7 @@ describe("container runner", () => {
       "--",
       "bash",
       "-lc",
-      'cd "$1" && codex exec --skip-git-repo-check -a never --sandbox workspace-write "$2"',
+      codexCommand,
       "bash",
       "steps/0/baseline",
       "Generate"
