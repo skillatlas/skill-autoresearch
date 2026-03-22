@@ -281,7 +281,7 @@ if (command === "screenshot") {
             {
               outputType: "image",
               command:
-                'skill-autoresearch capture-screenshot "$STEP_ORIGIN/index.html" "$STEP_PATH/index.png"',
+                'capture-screenshot "$STEP_ORIGIN/index.html" "$STEP_PATH/index.png"',
               resultPath: "$STEP_PATH/index.png"
             }
           ],
