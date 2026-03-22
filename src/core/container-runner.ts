@@ -123,6 +123,42 @@ function summarizeExecArgs(args: readonly string[]): string {
     .join(" ")}`;
 }
 
+function buildIsolatedHomeSetupCommand(configPaths: readonly string[]): string {
+  const copyCommands = configPaths.map((configPath) =>
+    configPath.endsWith(".json")
+      ? `if [ -f /root/${configPath} ]; then cp /root/${configPath} "$HOME/${configPath}"; fi`
+      : `if [ -d /root/${configPath} ]; then cp -R /root/${configPath} "$HOME/${configPath}"; fi`
+  );
+
+  return [
+    'tmp_home="$(mktemp -d)"',
+    'cleanup() { rm -rf "$tmp_home"; }',
+    "trap cleanup EXIT",
+    'export HOME="$tmp_home"',
+    ...copyCommands
+  ].join("; ");
+}
+
+function buildClaudeCommand(debugGeneration: boolean): string {
+  const claudeCommand = debugGeneration
+    ? 'claude --no-session-persistence --verbose --output-format stream-json -p "$2"'
+    : 'claude --no-session-persistence -p "$2"';
+
+  return [
+    buildIsolatedHomeSetupCommand([".claude", ".claude.json"]),
+    'cd "$1"',
+    claudeCommand
+  ].join("; ");
+}
+
+function buildCodexCommand(): string {
+  return [
+    buildIsolatedHomeSetupCommand([".codex"]),
+    'cd "$1"',
+    'codex exec --ephemeral --skip-git-repo-check -a never --sandbox workspace-write "$2"'
+  ].join("; ");
+}
+
 function writePrefixedOutput(stream: Readable, prefix: string): Promise<void> {
   return new Promise((resolve, reject) => {
     let buffered = "";
@@ -204,10 +240,8 @@ export function buildContainerExecArgs(
     isGenerationExecution(execution);
   const agentCommand =
     execution.harness === "claude"
-      ? debugGeneration
-        ? 'cd "$1" && claude --verbose --output-format stream-json -p "$2"'
-        : 'cd "$1" && claude -p "$2"'
-      : 'cd "$1" && codex exec --skip-git-repo-check -a never --sandbox workspace-write "$2"';
+      ? buildClaudeCommand(debugGeneration)
+      : buildCodexCommand();
 
   args.push(
     execution.containerRoot,
