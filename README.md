@@ -159,7 +159,7 @@ commands:
   - outputType: text
     resultPath: "$STEP_PATH/index.html"
   - outputType: image
-    command: skill-autoresearch capture-screenshot "$STEP_ORIGIN/index.html" "$STEP_PATH/index.png"
+    command: capture-screenshot "$STEP_ORIGIN/index.html" "$STEP_PATH/index.png"
     resultPath: "$STEP_PATH/index.png"
 ---
 
