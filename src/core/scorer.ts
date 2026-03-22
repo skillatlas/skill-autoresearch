@@ -86,6 +86,10 @@ function isDebugScoreEnabled(): boolean {
   return process.env.DEBUG_SCORE === "1";
 }
 
+function isDebugLogScoringEnabled(): boolean {
+  return process.env.DEBUG_LOG_SCORING === "1";
+}
+
 function serializeEvidenceForDebug(evidence: EvidenceItem[]) {
   return evidence.map((item) =>
     item.outputType === "text"
@@ -102,6 +106,52 @@ function serializeEvidenceForDebug(evidence: EvidenceItem[]) {
           byteLength: item.bytes.length
         }
   );
+}
+
+function serializeOpenRouterMessages(
+  messages: Array<
+    | { role: "user"; content: string }
+    | {
+        role: "user";
+        content: Array<
+          | { type: "text"; text: string }
+          | { type: "image"; image: Buffer }
+        >;
+      }
+  >
+) {
+  return messages.map((message) => ({
+    role: message.role,
+    content:
+      typeof message.content === "string"
+        ? message.content
+        : message.content.map((part) =>
+            part.type === "text"
+              ? { type: "text" as const, text: part.text }
+              : { type: "image" as const, byteLength: part.image.length }
+          )
+  }));
+}
+
+function serializeOpenRouterError(error: unknown) {
+  if (!(error instanceof Error)) {
+    return { message: String(error) };
+  }
+
+  return {
+    name: error.name,
+    message: error.message,
+    stack: error.stack,
+    cause: error.cause,
+    ...(typeof error === "object" && error
+      ? {
+          text: "text" in error ? (error as { text?: unknown }).text : undefined,
+          response:
+            "response" in error ? (error as { response?: unknown }).response : undefined,
+          usage: "usage" in error ? (error as { usage?: unknown }).usage : undefined
+        }
+      : {})
+  };
 }
 
 function tokenizeShellCommand(command: string): string[] | undefined {
@@ -377,7 +427,10 @@ export interface ScoringService {
 }
 
 export class OpenRouterVoteJudge implements VoteJudge {
-  public constructor(private readonly logger: Logger) {}
+  public constructor(
+    private readonly logger: Logger,
+    private readonly workspaceRoot: string = process.cwd()
+  ) {}
 
   public async generateVote(input: {
     modelId: string;
@@ -389,16 +442,40 @@ export class OpenRouterVoteJudge implements VoteJudge {
       this.buildEvidenceMessage("Candidate A", input.incumbentEvidence),
       this.buildEvidenceMessage("Candidate B", input.candidateEvidence)
     ];
-    this.logDebugInput(input, messages);
+    const requestPayload = this.buildDebugRequestPayload(input, messages);
+    this.logDebugInput(requestPayload);
 
-    const result = await generateObject({
-      model: openrouter(input.modelId),
-      system: input.rubricPrompt,
-      schema: scoreVoteSchema,
-      messages
-    });
+    try {
+      const result = await generateObject({
+        model: openrouter(input.modelId),
+        system: input.rubricPrompt,
+        schema: scoreVoteSchema,
+        messages
+      });
 
-    return result.object;
+      await this.writeDebugLogFile({
+        provider: "openrouter",
+        loggedAt: new Date().toISOString(),
+        request: requestPayload,
+        response: {
+          object: result.object,
+          usage: "usage" in result ? result.usage : undefined,
+          warnings: "warnings" in result ? result.warnings : undefined,
+          finishReason: "finishReason" in result ? result.finishReason : undefined,
+          response: "response" in result ? result.response : undefined
+        }
+      });
+
+      return result.object;
+    } catch (error) {
+      await this.writeDebugLogFile({
+        provider: "openrouter",
+        loggedAt: new Date().toISOString(),
+        request: requestPayload,
+        error: serializeOpenRouterError(error)
+      });
+      throw error;
+    }
   }
 
   private buildEvidenceMessage(label: string, evidence: EvidenceItem[]) {
@@ -452,7 +529,7 @@ export class OpenRouterVoteJudge implements VoteJudge {
     };
   }
 
-  private logDebugInput(
+  private buildDebugRequestPayload(
     input: {
       modelId: string;
       rubricPrompt: string;
@@ -469,35 +546,63 @@ export class OpenRouterVoteJudge implements VoteJudge {
           >;
         }
     >
-  ): void {
-    if (!isDebugScoreEnabled()) {
-      return;
-    }
-
-    const payload = {
+  ) {
+    return {
       provider: "openrouter" as const,
       modelId: input.modelId,
       system: input.rubricPrompt,
-      messages: messages.map((message) => ({
-        role: message.role,
-        content:
-          typeof message.content === "string"
-            ? message.content
-            : message.content.map((part) =>
-                part.type === "text"
-                  ? { type: "text" as const, text: part.text }
-                  : { type: "image" as const, byteLength: part.image.length }
-              )
-      })),
+      messages: serializeOpenRouterMessages(messages),
       incumbentEvidence: serializeEvidenceForDebug(input.incumbentEvidence),
       candidateEvidence: serializeEvidenceForDebug(input.candidateEvidence)
     };
+  }
+
+  private logDebugInput(payload: {
+    provider: "openrouter";
+    modelId: string;
+    system: string;
+    messages: Array<{
+      role: "user";
+      content:
+        | string
+        | Array<
+            | { type: "text"; text: string }
+            | { type: "image"; byteLength: number }
+          >;
+    }>;
+    incumbentEvidence: ReturnType<typeof serializeEvidenceForDebug>;
+    candidateEvidence: ReturnType<typeof serializeEvidenceForDebug>;
+  }): void {
+    if (!isDebugScoreEnabled()) {
+      return;
+    }
 
     this.logger.info(
       `[score-debug] OpenRouter scoring input:\n${JSON.stringify(payload, null, 2)}`,
       payload,
       "score-debug"
     );
+  }
+
+  private async writeDebugLogFile(payload: unknown): Promise<void> {
+    if (!isDebugLogScoringEnabled()) {
+      return;
+    }
+
+    const logDir = path.join(this.workspaceRoot, "log");
+    const filename = `openrouter-score-${Date.now()}-${randomUUID()}.json`;
+
+    try {
+      await fs.ensureDir(logDir);
+      await fs.writeJson(path.join(logDir, filename), payload, { spaces: 2 });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        `Failed to write OpenRouter scoring debug log to ${path.join(logDir, filename)}: ${message}`,
+        { error },
+        "score-debug-log-write-failed"
+      );
+    }
   }
 }
 

@@ -105,6 +105,7 @@ The generation harness runs inside an isolated container. These variables are fo
 |---|---|
 | `DEBUG_GENERATION=1` | Stream verbose output from Claude during generation |
 | `DEBUG_SCORE=1` | Log scoring inputs to JSONL |
+| `DEBUG_LOG_SCORING=1` | Write one JSON file per OpenRouter scoring call to `./log/` with request and response payloads |
 
 **Example `.env`:**
 

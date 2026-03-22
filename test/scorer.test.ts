@@ -691,7 +691,8 @@ if (command === "close") {
     process.env.DEBUG_SCORE = "1";
 
     try {
-      (new OpenRouterVoteJudge(logger) as any).logDebugInput(
+      const judge = new OpenRouterVoteJudge(logger) as any;
+      const payload = judge.buildDebugRequestPayload(
         {
           modelId: "test-model",
           rubricPrompt: "Judge the candidates.",
@@ -732,6 +733,7 @@ if (command === "close") {
           }
         ]
       );
+      judge.logDebugInput(payload);
 
       expect(infoSpy).toHaveBeenCalledTimes(1);
       const [message] = infoSpy.mock.calls[0];
@@ -745,6 +747,67 @@ if (command === "close") {
         process.env.DEBUG_SCORE = previousDebugScore;
       }
       infoSpy.mockRestore();
+    }
+  });
+
+  it("writes one OpenRouter scoring log file per call when DEBUG_LOG_SCORING=1", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openrouter-score-log-"));
+    const previousDebugLogScoring = process.env.DEBUG_LOG_SCORING;
+    process.env.DEBUG_LOG_SCORING = "1";
+
+    try {
+      const judge = new OpenRouterVoteJudge(new Logger(false), workspaceRoot) as any;
+      await judge.writeDebugLogFile({
+        provider: "openrouter",
+        loggedAt: "2026-03-22T12:00:00.000Z",
+        request: {
+          provider: "openrouter",
+          modelId: "test-model",
+          system: "Judge the candidates.",
+          messages: [
+            {
+              role: "user",
+              content: "Candidate A evidence"
+            }
+          ]
+        },
+        response: {
+          object: {
+            winner: "A",
+            confidence: 0.8
+          },
+          response: {
+            body: {
+              id: "resp_123"
+            }
+          }
+        }
+      });
+
+      const logDir = path.join(workspaceRoot, "log");
+      const files = await fs.readdir(logDir);
+      expect(files).toHaveLength(1);
+
+      const logPayload = await fs.readJson(path.join(logDir, files[0]!));
+      expect(logPayload.request.messages).toEqual([
+        {
+          role: "user",
+          content: "Candidate A evidence"
+        }
+      ]);
+      expect(logPayload.response.object).toEqual({
+        winner: "A",
+        confidence: 0.8
+      });
+      expect(logPayload.response.response.body).toEqual({
+        id: "resp_123"
+      });
+    } finally {
+      if (previousDebugLogScoring === undefined) {
+        delete process.env.DEBUG_LOG_SCORING;
+      } else {
+        process.env.DEBUG_LOG_SCORING = previousDebugLogScoring;
+      }
     }
   });
 
