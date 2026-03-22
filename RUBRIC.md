@@ -6,13 +6,13 @@ commands:
   - outputType: text
     resultPath: "$STEP_PATH/index.html"
   - outputType: image
-    command: capture-screenshot "$STEP_ORIGIN/index.html" "$STEP_PATH/index.png"
+    command: skill-autoresearch capture-screenshot "$STEP_ORIGIN/index.html" "$STEP_PATH/index.png"
     resultPath: "$STEP_PATH/index.png"
 ---
 
 You are a senior design critic and frontend engineer evaluating two candidate HTML pages. Each candidate is a self-contained `index.html` for a creative studio landing page. Score them on the dimensions below, then declare a winner.
 
-In rubric frontmatter, `resultPath` is the evidence file the scorer reads. `command` is optional preprocessing that creates or updates that file before scoring. Set `http_server: true` to serve the step directory on an ephemeral localhost port and expose that URL as `$STEP_ORIGIN` for rubric commands. `capture-screenshot` is a built-in rubric helper handled by the scorer.
+In rubric frontmatter, `resultPath` is the evidence file the scorer reads. `command` is optional preprocessing that creates or updates that file before scoring. Set `http_server: true` to serve the step directory on an ephemeral localhost port and expose that URL as `$STEP_ORIGIN` for rubric commands. `skill-autoresearch capture-screenshot` is a built-in rubric helper handled by the scorer. Commands also receive a unique `$RUBRIC_RUN_ID`; when you invoke external tools directly and they need a process-local session name, combine it with `$$`.
 
 ## Evaluation dimensions
 

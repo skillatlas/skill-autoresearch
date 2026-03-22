@@ -262,6 +262,62 @@ describe("container runner", () => {
     expect(error?.message).not.toContain("very sensitive prompt body");
   });
 
+  it("retries transient Claude generation failures", async () => {
+    execaMock
+      .mockResolvedValueOnce({
+        exitCode: 1,
+        all: "[ERROR] Unexpected end of JSON input"
+      })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        all: "ok"
+      });
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const runner = new CodeContainerRunner("/tmp/workspace", new Logger(false), false);
+
+      await runner.runPrompt({
+        containerRoot: "/tmp/workspace",
+        targetPath: "/tmp/workspace/steps/1/candidates/1",
+        prompt: "Generate",
+        label: "Candidate 1 generation for step 5",
+        harness: "claude"
+      });
+
+      expect(execaMock).toHaveBeenCalledTimes(2);
+      expect(warnSpy).toHaveBeenCalledWith(
+        "Retrying Candidate 1 generation for step 5 after transient Claude CLI failure (1/3)."
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("does not retry transient Claude failures for mutation runs", async () => {
+    execaMock.mockResolvedValue({
+      exitCode: 1,
+      all: "[ERROR] Unexpected end of JSON input"
+    });
+
+    const runner = new CodeContainerRunner("/tmp/workspace", new Logger(false), false);
+
+    await expect(
+      runner.runPrompt({
+        containerRoot: "/tmp/workspace",
+        targetPath: "/tmp/workspace/skills",
+        prompt: "Mutate",
+        label: "Skill mutation for step 5",
+        harness: "claude"
+      })
+    ).rejects.toThrow(
+      "Container command failed for Skill mutation for step 5 with exit code 1."
+    );
+
+    expect(execaMock).toHaveBeenCalledTimes(1);
+  });
+
   it("prefixes streamed debug generation output with the target path", async () => {
     const all = new PassThrough();
     const result = Promise.resolve({
