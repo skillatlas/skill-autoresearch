@@ -100,12 +100,12 @@ describe("workspace sandboxes", () => {
     await fs.remove(path.join(workspaceRoot, "GENERATION.md"));
     await fs.writeFile(
       path.join(workspaceRoot, "GENERATION1.md"),
-      "---\nharness: codex\n---\nFirst prompt.\n",
+      "---\nprovider: codex\n---\nFirst prompt.\n",
       "utf8"
     );
     await fs.writeFile(
       path.join(workspaceRoot, "GENERATION2.md"),
-      "---\nharness: claude\n---\nSecond prompt.\n",
+      "---\nprovider: claude\n---\nSecond prompt.\n",
       "utf8"
     );
 

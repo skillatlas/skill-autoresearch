@@ -39,14 +39,15 @@ async function withClearedInferenceEnv<T>(callback: () => Promise<T>): Promise<T
 }
 
 describe("generation parsing", () => {
-  it("requires an explicit harness and trims the prompt body", async () => {
+  it("supports an explicit provider and optional model", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "generation-"));
     const generationPath = path.join(tempDir, "GENERATION.md");
 
     await fs.writeFile(
       generationPath,
       `---
-harness: codex
+provider: codex
+model: gpt-5
 ---
 
 Generate the artifact set.
@@ -56,11 +57,12 @@ Generate the artifact set.
 
     const generation = await loadGeneration(generationPath);
     expect(generation.fileName).toBe("GENERATION.md");
-    expect(generation.harness).toBe("codex");
+    expect(generation.provider).toBe("codex");
+    expect(generation.modelId).toBe("gpt-5");
     expect(generation.prompt).toBe("Generate the artifact set.");
   });
 
-  it("rejects generation files without a harness", async () => {
+  it("rejects generation files without an inferable provider", async () => {
     await withClearedInferenceEnv(async () => {
       const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "generation-"));
       const generationPath = path.join(tempDir, "GENERATION.md");
@@ -73,7 +75,7 @@ Generate the artifact set.
     });
   });
 
-  it("infers the harness from the workspace .env when omitted", async () => {
+  it("infers the provider from the workspace .env when omitted", async () => {
     await withClearedInferenceEnv(async () => {
       const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "generation-"));
       const generationPath = path.join(tempDir, "GENERATION.md");
@@ -86,7 +88,8 @@ Generate the artifact set.
       await fs.writeFile(generationPath, "Generate the artifact set.\n", "utf8");
 
       const generation = await loadGeneration(generationPath);
-      expect(generation.harness).toBe("codex");
+      expect(generation.provider).toBe("codex");
+      expect(generation.modelId).toBeUndefined();
     });
   });
 
@@ -97,7 +100,7 @@ Generate the artifact set.
     await fs.writeFile(
       generationPath,
       `---
-harness: claude
+provider: claude
 ---
 `,
       "utf8"
@@ -112,17 +115,17 @@ harness: claude
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "generation-"));
     await fs.writeFile(
       path.join(tempDir, "GENERATION2.md"),
-      "---\nharness: codex\n---\nSecond prompt.\n",
+      "---\nprovider: codex\n---\nSecond prompt.\n",
       "utf8"
     );
     await fs.writeFile(
       path.join(tempDir, "GENERATION.md"),
-      "---\nharness: claude\n---\nFirst prompt.\n",
+      "---\nprovider: claude\n---\nFirst prompt.\n",
       "utf8"
     );
     await fs.writeFile(
       path.join(tempDir, "GENERATION1.md"),
-      "---\nharness: claude\n---\nMiddle prompt.\n",
+      "---\nprovider: claude\n---\nMiddle prompt.\n",
       "utf8"
     );
 

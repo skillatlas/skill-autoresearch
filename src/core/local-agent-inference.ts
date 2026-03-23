@@ -91,7 +91,7 @@ export async function inferLocalAgent(workspaceRoot: string): Promise<LocalAgent
 
   throw new Error(
     [
-      "Unable to infer a local agent. Add `harness` to GENERATION.md or `provider` to RUBRIC.md, or configure one of:",
+      "Unable to infer a local agent. Add `provider` to GENERATION.md or RUBRIC.md, or configure one of:",
       "`CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, `~/.code-container/configs/codex/auth.json`, `OPENAI_API_KEY`.",
       codexAuth.issue
     ]

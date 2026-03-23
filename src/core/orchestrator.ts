@@ -235,7 +235,7 @@ export class Orchestrator {
       dryRun: true
     });
     const generations = await this.workspace.loadGenerationSpecs();
-    const harnesses = [...new Set(generations.map((generation) => generation.harness))];
+    const providers = [...new Set(generations.map((generation) => generation.provider))];
 
     this.logger.info(`Dry run for workspace ${this.workspace.root}`);
     this.logger.info(`Run ID: ${previewRunId}`);
@@ -243,7 +243,7 @@ export class Orchestrator {
     this.logger.info(
       `Generation prompts: ${generations.map((generation) => generation.fileName).join(", ")}`
     );
-    this.logger.info(`Generation harnesses: ${harnesses.join(", ")}`);
+    this.logger.info(`Generation providers: ${providers.join(", ")}`);
     this.logger.info(
       `Planned loop: baseline + ${describeMaxSteps(this.options.maxSteps)} mutation step(s), ${this.options.candidateCount} candidate(s) per generation prompt, ${this.options.voteCount} vote(s) per candidate comparison.`
     );
@@ -254,10 +254,10 @@ export class Orchestrator {
     }
 
     const rubric = await this.scorer.loadRubric(this.workspace.paths.rubricPath);
+    const modelLabel =
+      this.options.modelOverride ?? rubric.modelId ?? "<provider default>";
     this.logger.info(
-      `Rubric scorer: ${
-        rubric.provider
-      }/${this.options.modelOverride ?? rubric.modelId} (${[
+      `Rubric scorer: ${rubric.provider}/${modelLabel} (${[
         ...new Set(rubric.commands.map((command) => command.outputType))
       ].join("+")})`
     );
@@ -306,7 +306,7 @@ export class Orchestrator {
         targetPath: sandbox.targetPath,
         prompt: await this.workspace.readPrompt(this.workspace.paths.instructionsPath),
         label: `Skill mutation for step ${state.stepIndex}`,
-        harness: "claude"
+        provider: "claude"
       });
       await sandbox.applyChanges();
     } finally {
@@ -692,7 +692,8 @@ export class Orchestrator {
           targetPath: sandbox.targetPath,
           prompt: generation.prompt,
           label,
-          harness: generation.harness
+          provider: generation.provider,
+          modelId: generation.modelId
         });
         await sandbox.persistArtifacts();
       } finally {
@@ -716,7 +717,11 @@ export class Orchestrator {
     const links = generations
       .map((generation) => {
         const subdir = getGenerationArtifactSubdir(generation);
-        return `<li><a href="./${encodeURIComponent(subdir)}/">${escapeHtml(generation.fileName)}</a> <span>${escapeHtml(generation.harness)}</span></li>`;
+        return `<li><a href="./${encodeURIComponent(subdir)}/">${escapeHtml(generation.fileName)}</a> <span>${escapeHtml(
+          generation.modelId
+            ? `${generation.provider}/${generation.modelId}`
+            : generation.provider
+        )}</span></li>`;
       })
       .join("");
 
@@ -728,23 +733,23 @@ export class Orchestrator {
     <title>Generation Outputs</title>
     <style>
       :root {
-        color-scheme: light;
-        font-family: ui-sans-serif, system-ui, sans-serif;
+        color-scheme: dark;
+        font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
       body {
         margin: 0;
         padding: 32px;
-        background: #f5f7fb;
-        color: #1f2937;
+        background: #111114;
+        color: #e4e4e7;
       }
       main {
         max-width: 720px;
         margin: 0 auto;
-        background: #ffffff;
-        border: 1px solid #dbe4f0;
+        background: #1a1a1f;
+        border: 1px solid #2a2a30;
         border-radius: 18px;
         padding: 24px;
-        box-shadow: 0 18px 40px rgba(15, 23, 42, 0.08);
+        box-shadow: 0 18px 40px rgba(0, 0, 0, 0.3);
       }
       h1 {
         margin: 0 0 12px;
@@ -762,10 +767,10 @@ export class Orchestrator {
         margin-top: 10px;
       }
       a {
-        color: #0f62fe;
+        color: #60a5fa;
       }
       span {
-        color: #526072;
+        color: #71717a;
         margin-left: 8px;
         font-size: 0.95rem;
       }

@@ -1,13 +1,14 @@
 import { z } from "zod";
 
-export const generationHarnessSchema = z.enum(["claude", "codex"]);
+export const generationProviderSchema = z.enum(["claude", "codex"]);
 
 export const generationSpecSchema = z.object({
   sourcePath: z.string(),
   fileName: z.string().min(1),
-  harness: generationHarnessSchema,
+  provider: generationProviderSchema,
+  modelId: z.string().min(1).optional(),
   prompt: z.string().min(1)
 });
 
-export type GenerationHarness = z.infer<typeof generationHarnessSchema>;
+export type GenerationProvider = z.infer<typeof generationProviderSchema>;
 export type GenerationSpec = z.infer<typeof generationSpecSchema>;

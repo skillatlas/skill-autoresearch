@@ -8,20 +8,23 @@ export const rubricHttpServerSchema = z.union([
 ]);
 
 export const normalizedRubricCommandSchema = z.object({
-  outputType: evidenceOutputTypeSchema,
+  outputType: evidenceOutputTypeSchema.optional(),
   command: z
     .string()
     .min(1, "Rubric command must be a non-empty string.")
     .optional(),
-  resultPath: z.string().min(1, "Rubric resultPath must be a non-empty string.")
+  resultPath: z
+    .string()
+    .min(1, "Rubric resultPath must be a non-empty string.")
+    .optional()
 });
 
 export const normalizedRubricSchema = z.object({
   sourcePath: z.string(),
   provider: scoringProviderSchema,
-  modelId: z.string().min(1),
+  modelId: z.string().min(1).optional(),
   httpServerPort: z.number().int().min(0).max(65535).optional(),
-  commands: z.array(normalizedRubricCommandSchema).min(1),
+  commands: z.array(normalizedRubricCommandSchema),
   prompt: z.string().min(1)
 });
 

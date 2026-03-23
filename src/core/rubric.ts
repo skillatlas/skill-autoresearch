@@ -14,61 +14,89 @@ import {
 const rawRubricCommandSchema = z.object({
   outputType: evidenceOutputTypeSchema.optional(),
   command: z.string().min(1).optional(),
-  resultPath: z.string().min(1)
+  resultPath: z.string().min(1).optional()
 });
 
-const rawRubricFrontmatterSchema = z
-  .object({
-    provider: z.enum(["openrouter", "codex", "claude"]).optional(),
-    model: z.string().min(1),
-    http_server: rubricHttpServerSchema.optional(),
-    outputType: evidenceOutputTypeSchema.optional(),
-    command: z.string().min(1).optional(),
-    resultPath: z.string().min(1).optional(),
-    commands: z
-      .union([rawRubricCommandSchema, z.array(rawRubricCommandSchema).min(1)])
-      .optional()
-  })
-  .superRefine((value, ctx) => {
-    if (!value.resultPath && !value.commands) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Rubric frontmatter must contain either `resultPath` or `commands`."
-      });
-    }
+const rawRubricFrontmatterSchema = z.object({
+  provider: z.enum(["openrouter", "codex", "claude"]).optional(),
+  model: z.string().min(1).optional(),
+  http_server: rubricHttpServerSchema.optional(),
+  outputType: evidenceOutputTypeSchema.optional(),
+  command: z.string().min(1).optional(),
+  resultPath: z.string().min(1).optional(),
+  commands: z
+    .union([rawRubricCommandSchema, z.array(rawRubricCommandSchema).min(1)])
+    .optional()
+});
 
-    if ((value.command || value.resultPath) && value.commands) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message:
-          "Rubric frontmatter cannot combine top-level `command`/`resultPath` with `commands`."
-      });
-    }
+function normalizeRubricCommands(input: {
+  provider: NormalizedRubric["provider"];
+  outputType?: NormalizedRubric["commands"][number]["outputType"];
+  command?: string;
+  resultPath?: string;
+  commands?:
+    | z.infer<typeof rawRubricCommandSchema>
+    | Array<z.infer<typeof rawRubricCommandSchema>>;
+}): NormalizedRubric["commands"] {
+  if ((input.command || input.resultPath) && input.commands) {
+    throw new Error(
+      "Rubric frontmatter cannot combine top-level `command`/`resultPath` with `commands`."
+    );
+  }
 
-    if (!value.commands && !value.outputType) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Top-level `resultPath` requires a matching top-level `outputType`."
-      });
-    }
-
-    const commands = value.commands
-      ? Array.isArray(value.commands)
-        ? value.commands
-        : [value.commands]
+  const rawCommands = input.commands
+    ? Array.isArray(input.commands)
+      ? input.commands
+      : [input.commands]
+    : input.command || input.resultPath || input.outputType
+      ? [
+          {
+            outputType: input.outputType,
+            command: input.command,
+            resultPath: input.resultPath
+          }
+        ]
       : [];
 
-    if (
-      !value.outputType &&
-      commands.some((command) => command.outputType === undefined)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message:
-          "Each rubric command must define `outputType` when no top-level `outputType` is set."
-      });
-    }
-  });
+  if (input.provider === "openrouter" && rawCommands.length === 0) {
+    throw new Error(
+      "Rubric frontmatter must contain `resultPath` or `commands` when `provider` is `openrouter`."
+    );
+  }
+
+  if (!input.commands && input.resultPath && !input.outputType) {
+    throw new Error("Top-level `resultPath` requires a matching top-level `outputType`.");
+  }
+
+  if (
+    !input.outputType &&
+    rawCommands.some(
+      (command) => command.resultPath !== undefined && command.outputType === undefined
+    )
+  ) {
+    throw new Error(
+      "Each rubric command must define `outputType` when no top-level `outputType` is set."
+    );
+  }
+
+  if (
+    input.provider === "openrouter" &&
+    rawCommands.some((command) => command.resultPath === undefined)
+  ) {
+    throw new Error(
+      "Each rubric command must define `resultPath` when `provider` is `openrouter`."
+    );
+  }
+
+  return rawCommands.map((commandDefinition) => ({
+    outputType:
+      commandDefinition.resultPath === undefined
+        ? undefined
+        : commandDefinition.outputType ?? input.outputType,
+    command: commandDefinition.command,
+    resultPath: commandDefinition.resultPath
+  }));
+}
 
 export function interpolateStepPath(
   template: string,
@@ -100,27 +128,23 @@ export async function loadRubric(rubricPath: string): Promise<NormalizedRubric> 
   const provider =
     frontmatter.provider ?? (await inferLocalAgent(path.dirname(rubricPath)));
 
+  if (provider === "openrouter" && frontmatter.model === undefined) {
+    throw new Error(
+      "Rubric frontmatter must contain `model` when `provider` is `openrouter`."
+    );
+  }
+
   if (prompt.length === 0) {
     throw new Error("Rubric body must not be empty.");
   }
 
-  const rawCommands = frontmatter.commands
-    ? Array.isArray(frontmatter.commands)
-      ? frontmatter.commands
-      : [frontmatter.commands]
-    : [
-        {
-          outputType: frontmatter.outputType,
-          command: frontmatter.command,
-          resultPath: frontmatter.resultPath!
-        }
-      ];
-
-  const commands = rawCommands.map((commandDefinition) => ({
-    outputType: commandDefinition.outputType ?? frontmatter.outputType!,
-    command: commandDefinition.command,
-    resultPath: commandDefinition.resultPath
-  }));
+  const commands = normalizeRubricCommands({
+    provider,
+    outputType: frontmatter.outputType,
+    command: frontmatter.command,
+    resultPath: frontmatter.resultPath,
+    commands: frontmatter.commands
+  });
 
   return normalizedRubricSchema.parse({
     sourcePath: rubricPath,

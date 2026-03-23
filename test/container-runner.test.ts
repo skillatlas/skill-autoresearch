@@ -21,8 +21,12 @@ const claudeCommand =
   'tmp_home="$(mktemp -d)"; cleanup() { rm -rf "$tmp_home"; }; trap cleanup EXIT; export HOME="$tmp_home"; if [ -d /root/.claude ]; then cp -R /root/.claude "$HOME/.claude"; fi; if [ -f /root/.claude.json ]; then cp /root/.claude.json "$HOME/.claude.json"; fi; cd "$1"; claude --no-session-persistence -p "$2"';
 const claudeDebugCommand =
   'tmp_home="$(mktemp -d)"; cleanup() { rm -rf "$tmp_home"; }; trap cleanup EXIT; export HOME="$tmp_home"; if [ -d /root/.claude ]; then cp -R /root/.claude "$HOME/.claude"; fi; if [ -f /root/.claude.json ]; then cp /root/.claude.json "$HOME/.claude.json"; fi; cd "$1"; claude --no-session-persistence --verbose --output-format stream-json -p "$2"';
+const claudeModelCommand =
+  'tmp_home="$(mktemp -d)"; cleanup() { rm -rf "$tmp_home"; }; trap cleanup EXIT; export HOME="$tmp_home"; if [ -d /root/.claude ]; then cp -R /root/.claude "$HOME/.claude"; fi; if [ -f /root/.claude.json ]; then cp /root/.claude.json "$HOME/.claude.json"; fi; cd "$1"; claude --no-session-persistence --model "$3" -p "$2"';
 const codexCommand =
   'tmp_home="$(mktemp -d)"; cleanup() { rm -rf "$tmp_home"; }; trap cleanup EXIT; export HOME="$tmp_home"; if [ -d /root/.codex ]; then cp -R /root/.codex "$HOME/.codex"; fi; cd "$1"; codex exec --ephemeral --skip-git-repo-check -a never --sandbox workspace-write "$2"';
+const codexModelCommand =
+  'tmp_home="$(mktemp -d)"; cleanup() { rm -rf "$tmp_home"; }; trap cleanup EXIT; export HOME="$tmp_home"; if [ -d /root/.codex ]; then cp -R /root/.codex "$HOME/.codex"; fi; cd "$1"; codex exec --ephemeral --skip-git-repo-check -a never --sandbox workspace-write --model "$3" "$2"';
 
 describe("container runner", () => {
   beforeEach(() => {
@@ -47,7 +51,7 @@ describe("container runner", () => {
         targetPath: "/tmp/project/steps/0/baseline",
         prompt: "Generate",
         label: "Baseline generation",
-        harness: "claude"
+        provider: "claude"
       },
       {
         CLAUDE_CODE_OAUTH_TOKEN: "secret"
@@ -78,7 +82,7 @@ describe("container runner", () => {
         targetPath: "/tmp/project/steps/0/baseline",
         prompt: "Generate",
         label: "Baseline generation",
-        harness: "claude"
+        provider: "claude"
       },
       {}
     );
@@ -105,7 +109,7 @@ describe("container runner", () => {
         targetPath: "/tmp/project/artifact",
         prompt: "Generate",
         label: "Baseline generation",
-        harness: "claude"
+        provider: "claude"
       },
       {
         DEBUG_GENERATION: "1"
@@ -134,7 +138,7 @@ describe("container runner", () => {
         targetPath: "/tmp/project/skills",
         prompt: "Mutate",
         label: "Skill mutation for step 1",
-        harness: "claude"
+        provider: "claude"
       },
       {
         DEBUG_GENERATION: "1"
@@ -163,7 +167,7 @@ describe("container runner", () => {
         targetPath: "/tmp/project/steps/0/baseline",
         prompt: "Generate",
         label: "Baseline generation",
-        harness: "claude"
+        provider: "claude"
       },
       {}
     );
@@ -190,7 +194,7 @@ describe("container runner", () => {
         targetPath: "/tmp/project/steps/0/baseline",
         prompt: "Generate",
         label: "Baseline generation",
-        harness: "codex"
+        provider: "codex"
       },
       {
         OPENAI_API_KEY: "secret",
@@ -225,7 +229,7 @@ describe("container runner", () => {
           targetPath: "/tmp/elsewhere",
           prompt: "Generate",
           label: "Baseline generation",
-          harness: "claude"
+          provider: "claude"
         },
         {}
       )
@@ -247,7 +251,7 @@ describe("container runner", () => {
         targetPath: "/tmp/workspace/steps/1/candidates/2",
         prompt: "very sensitive prompt body",
         label: "Candidate 2 generation for step 1",
-        harness: "claude"
+        provider: "claude"
       });
     } catch (thrown) {
       error = thrown as Error;
@@ -283,7 +287,7 @@ describe("container runner", () => {
         targetPath: "/tmp/workspace/steps/1/candidates/1",
         prompt: "Generate",
         label: "Candidate 1 generation for step 5",
-        harness: "claude"
+        provider: "claude"
       });
 
       expect(execaMock).toHaveBeenCalledTimes(2);
@@ -309,7 +313,7 @@ describe("container runner", () => {
         targetPath: "/tmp/workspace/skills",
         prompt: "Mutate",
         label: "Skill mutation for step 5",
-        harness: "claude"
+        provider: "claude"
       })
     ).rejects.toThrow(
       "Container command failed for Skill mutation for step 5 with exit code 1."
@@ -339,7 +343,7 @@ describe("container runner", () => {
         targetPath: "/tmp/workspace/steps/1/candidates/0",
         prompt: "Generate",
         label: "Candidate 0 generation for step 1",
-        harness: "claude"
+        provider: "claude"
       });
 
       all.write('{"type":"message"}\n{"type":"result"}');
@@ -387,7 +391,7 @@ describe("container runner", () => {
         targetPath: "/private/tmp/skill-autoresearch-generation-123/artifact",
         prompt: "Generate",
         label: "Baseline generation",
-        harness: "claude"
+        provider: "claude"
       });
 
       all.write('{"type":"message"}\n{"type":"result"}');
@@ -410,5 +414,63 @@ describe("container runner", () => {
       }
       consoleLogSpy.mockRestore();
     }
+  });
+
+  it("passes a configured generation model to Claude", () => {
+    const args = buildContainerExecArgs(
+      "/tmp/container.js",
+      {
+        containerRoot: "/tmp/project",
+        targetPath: "/tmp/project/steps/0/baseline",
+        prompt: "Generate",
+        label: "Baseline generation",
+        provider: "claude",
+        modelId: "claude-opus-4-1"
+      },
+      {}
+    );
+
+    expect(args).toEqual([
+      "/tmp/container.js",
+      "exec",
+      "/tmp/project",
+      "--",
+      "bash",
+      "-lc",
+      claudeModelCommand,
+      "bash",
+      "steps/0/baseline",
+      "Generate",
+      "claude-opus-4-1"
+    ]);
+  });
+
+  it("passes a configured generation model to Codex", () => {
+    const args = buildContainerExecArgs(
+      "/tmp/container.js",
+      {
+        containerRoot: "/tmp/project",
+        targetPath: "/tmp/project/steps/0/baseline",
+        prompt: "Generate",
+        label: "Baseline generation",
+        provider: "codex",
+        modelId: "gpt-5"
+      },
+      {}
+    );
+
+    expect(args).toEqual([
+      "/tmp/container.js",
+      "exec",
+      "/tmp/project",
+      "--",
+      "bash",
+      "-lc",
+      codexModelCommand,
+      "bash",
+      "steps/0/baseline",
+      "Generate",
+      "gpt-5"
+    ]);
   });
 });

@@ -6,12 +6,13 @@ import { z } from "zod";
 import { inferLocalAgent } from "./local-agent-inference.js";
 import {
   GenerationSpec,
-  generationHarnessSchema,
+  generationProviderSchema,
   generationSpecSchema
 } from "../types/generation.js";
 
 const generationFrontmatterSchema = z.object({
-  harness: generationHarnessSchema.optional()
+  provider: generationProviderSchema.optional(),
+  model: z.string().min(1).optional()
 });
 
 const generationFilePattern = /^GENERATION(?:(\d+))?\.md$/;
@@ -51,8 +52,8 @@ export async function loadGeneration(
   const parsed = matter(rawGeneration);
   const frontmatter = generationFrontmatterSchema.parse(parsed.data);
   const prompt = parsed.content.trim();
-  const harness =
-    frontmatter.harness ?? (await inferLocalAgent(path.dirname(generationPath)));
+  const provider =
+    frontmatter.provider ?? (await inferLocalAgent(path.dirname(generationPath)));
 
   if (prompt.length === 0) {
     throw new Error("Generation body must not be empty.");
@@ -61,7 +62,8 @@ export async function loadGeneration(
   return generationSpecSchema.parse({
     sourcePath: generationPath,
     fileName: path.basename(generationPath),
-    harness,
+    provider,
+    modelId: frontmatter.model,
     prompt
   });
 }

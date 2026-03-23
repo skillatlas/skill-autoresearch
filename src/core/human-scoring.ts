@@ -1611,13 +1611,13 @@ export class LocalHumanReviewService implements HumanReviewService {
       body {
         margin: 0;
         padding: 24px;
-        background: #f5f0e8;
-        color: #1b1713;
-        font-family: Georgia, "Times New Roman", serif;
+        background: #111114;
+        color: #e4e4e7;
+        font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
 
       a {
-        color: #b43f28;
+        color: #d97757;
       }
     </style>
   </head>
@@ -1651,15 +1651,15 @@ export class LocalHumanReviewService implements HumanReviewService {
     <title>Skill autoresearch monitor</title>
     <style>
       :root {
-        color-scheme: light;
-        --paper: #f4eee4;
-        --ink: #17120d;
-        --muted: rgba(23, 18, 13, 0.72);
-        --line: rgba(23, 18, 13, 0.14);
-        --accent: #b43f28;
-        --accent-strong: #8d2714;
-        --panel: rgba(255, 252, 247, 0.92);
-        --shadow: 0 24px 60px rgba(63, 37, 19, 0.14);
+        color-scheme: dark;
+        --paper: #111114;
+        --ink: #e4e4e7;
+        --muted: rgba(228, 228, 231, 0.55);
+        --line: rgba(228, 228, 231, 0.12);
+        --accent: #d97757;
+        --accent-strong: #e8896a;
+        --panel: rgba(26, 26, 31, 0.92);
+        --shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
       }
 
       * {
@@ -1670,11 +1670,11 @@ export class LocalHumanReviewService implements HumanReviewService {
         margin: 0;
         min-height: 100vh;
         background:
-          linear-gradient(135deg, rgba(180, 63, 40, 0.08), transparent 28%),
-          linear-gradient(210deg, rgba(23, 18, 13, 0.08), transparent 36%),
+          linear-gradient(135deg, rgba(217, 119, 87, 0.06), transparent 28%),
+          linear-gradient(210deg, rgba(228, 228, 231, 0.04), transparent 36%),
           var(--paper);
         color: var(--ink);
-        font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Palatino, serif;
+        font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
 
       .shell {
@@ -1730,7 +1730,7 @@ export class LocalHumanReviewService implements HumanReviewService {
       .progress-track {
         height: 10px;
         margin-top: 16px;
-        background: rgba(23, 18, 13, 0.08);
+        background: rgba(228, 228, 231, 0.06);
       }
 
       .progress-fill {
@@ -1765,7 +1765,7 @@ export class LocalHumanReviewService implements HumanReviewService {
         gap: 16px;
         padding: 12px 14px;
         border: 1px solid var(--line);
-        background: rgba(255, 255, 255, 0.65);
+        background: rgba(26, 26, 31, 0.65);
         font-size: 14px;
       }
 
@@ -1773,7 +1773,7 @@ export class LocalHumanReviewService implements HumanReviewService {
         display: grid;
         gap: 16px;
         padding: 20px;
-        background: rgba(255, 252, 247, 0.94);
+        background: rgba(26, 26, 31, 0.94);
         border: 1px solid var(--line);
         box-shadow: var(--shadow);
       }
@@ -1798,23 +1798,23 @@ export class LocalHumanReviewService implements HumanReviewService {
         padding: 16px;
         text-align: left;
         border-color: var(--line);
-        background: rgba(255, 255, 255, 0.74);
+        background: rgba(26, 26, 31, 0.74);
         color: var(--ink);
       }
 
       .step-tab[aria-pressed="true"] {
         border-color: var(--accent-strong);
         background:
-          linear-gradient(135deg, rgba(180, 63, 40, 0.1), transparent 72%),
-          rgba(255, 248, 243, 0.94);
+          linear-gradient(135deg, rgba(217, 119, 87, 0.1), transparent 72%),
+          rgba(26, 26, 31, 0.94);
       }
 
       .step-tab[data-outcome="accepted"] {
-        border-left: 4px solid #1c6037;
+        border-left: 4px solid #6ee7b7;
       }
 
       .step-tab[data-outcome="rejected"] {
-        border-left: 4px solid #8b2020;
+        border-left: 4px solid #f87171;
       }
 
       .step-tab[data-outcome="current"] {
@@ -1893,7 +1893,7 @@ export class LocalHumanReviewService implements HumanReviewService {
         align-items: center;
         padding: 5px 8px;
         border: 1px solid var(--line);
-        background: rgba(255, 255, 255, 0.76);
+        background: rgba(26, 26, 31, 0.76);
         font-family: "Courier New", monospace;
         font-size: 11px;
         letter-spacing: 0.08em;
@@ -1901,15 +1901,15 @@ export class LocalHumanReviewService implements HumanReviewService {
       }
 
       .panel-badge[data-tone="winner"] {
-        border-color: rgba(28, 96, 55, 0.24);
-        color: #1c6037;
-        background: rgba(28, 96, 55, 0.08);
+        border-color: rgba(110, 231, 183, 0.24);
+        color: #6ee7b7;
+        background: rgba(110, 231, 183, 0.08);
       }
 
       .panel-badge[data-tone="loser"] {
-        border-color: rgba(139, 32, 32, 0.22);
-        color: #8b2020;
-        background: rgba(139, 32, 32, 0.08);
+        border-color: rgba(248, 113, 113, 0.22);
+        color: #f87171;
+        background: rgba(248, 113, 113, 0.08);
       }
 
       .panel-actions {
@@ -1947,14 +1947,14 @@ export class LocalHumanReviewService implements HumanReviewService {
         overflow: hidden;
         border: 1px solid var(--line);
         background:
-          linear-gradient(180deg, rgba(23, 18, 13, 0.04), transparent 24%),
-          #ffffff;
+          linear-gradient(180deg, rgba(228, 228, 231, 0.03), transparent 24%),
+          #1a1a1f;
       }
 
       iframe {
         display: block;
         border: 0;
-        background: white;
+        background: #1a1a1f;
         transform-origin: top left;
         overflow: auto;
       }
@@ -1966,7 +1966,7 @@ export class LocalHumanReviewService implements HumanReviewService {
         align-items: center;
         justify-content: space-between;
         padding: 20px;
-        background: rgba(255, 252, 247, 0.94);
+        background: rgba(26, 26, 31, 0.94);
         border: 1px solid var(--line);
         box-shadow: var(--shadow);
       }
@@ -2003,7 +2003,7 @@ export class LocalHumanReviewService implements HumanReviewService {
         align-items: center;
         padding: 8px;
         border: 1px solid var(--line);
-        background: rgba(255, 255, 255, 0.68);
+        background: rgba(26, 26, 31, 0.68);
       }
 
       .viewport-label {
@@ -2019,7 +2019,7 @@ export class LocalHumanReviewService implements HumanReviewService {
         appearance: none;
         border: 1px solid var(--ink);
         background: var(--ink);
-        color: #fffaf4;
+        color: #e4e4e7;
         cursor: pointer;
         font: inherit;
         padding: 12px 18px;
@@ -2046,7 +2046,7 @@ export class LocalHumanReviewService implements HumanReviewService {
 
       button.viewport-button[aria-pressed="true"] {
         background: var(--ink);
-        color: #fffaf4;
+        color: #e4e4e7;
       }
 
       button:disabled,
@@ -2071,7 +2071,7 @@ export class LocalHumanReviewService implements HumanReviewService {
         display: grid;
         gap: 16px;
         padding: 22px;
-        background: rgba(255, 252, 247, 0.94);
+        background: rgba(26, 26, 31, 0.94);
         border: 1px solid var(--line);
         box-shadow: var(--shadow);
       }
@@ -2113,7 +2113,7 @@ export class LocalHumanReviewService implements HumanReviewService {
         flex-wrap: wrap;
         padding: 5px;
         border: 1px solid var(--line);
-        background: rgba(255, 255, 255, 0.7);
+        background: rgba(26, 26, 31, 0.7);
       }
 
       .diff-toggle[hidden] {
@@ -2133,7 +2133,7 @@ export class LocalHumanReviewService implements HumanReviewService {
 
       .diff-toggle-button[aria-pressed="true"] {
         background: var(--ink);
-        color: #fffaf4;
+        color: #e4e4e7;
       }
 
       .diff-summary {
@@ -2160,7 +2160,7 @@ export class LocalHumanReviewService implements HumanReviewService {
       .diff-empty {
         padding: 18px 20px;
         border: 1px solid var(--line);
-        background: rgba(255, 255, 255, 0.72);
+        background: rgba(26, 26, 31, 0.72);
         color: var(--muted);
         font-size: 15px;
         line-height: 1.6;
@@ -2169,7 +2169,7 @@ export class LocalHumanReviewService implements HumanReviewService {
       .diff-file {
         overflow: hidden;
         border: 1px solid var(--line);
-        background: rgba(255, 255, 255, 0.75);
+        background: rgba(26, 26, 31, 0.75);
       }
 
       .diff-file-header {
@@ -2184,8 +2184,8 @@ export class LocalHumanReviewService implements HumanReviewService {
         padding: 14px 16px;
         border-bottom: 1px solid var(--line);
         background:
-          linear-gradient(90deg, rgba(180, 63, 40, 0.08), transparent 42%),
-          rgba(255, 249, 241, 0.98);
+          linear-gradient(90deg, rgba(217, 119, 87, 0.08), transparent 42%),
+          rgba(26, 26, 31, 0.98);
       }
 
       .diff-file-path {
@@ -2208,7 +2208,7 @@ export class LocalHumanReviewService implements HumanReviewService {
         align-items: center;
         padding: 6px 10px;
         border: 1px solid var(--line);
-        background: rgba(255, 255, 255, 0.78);
+        background: rgba(26, 26, 31, 0.78);
         font-family: "Courier New", monospace;
         font-size: 11px;
         letter-spacing: 0.08em;
@@ -2216,22 +2216,22 @@ export class LocalHumanReviewService implements HumanReviewService {
       }
 
       .diff-pill[data-tone="added"] {
-        border-color: rgba(28, 96, 55, 0.24);
-        color: #1c6037;
-        background: rgba(28, 96, 55, 0.08);
+        border-color: rgba(110, 231, 183, 0.24);
+        color: #6ee7b7;
+        background: rgba(110, 231, 183, 0.08);
       }
 
       .diff-pill[data-tone="removed"] {
-        border-color: rgba(139, 32, 32, 0.22);
-        color: #8b2020;
-        background: rgba(139, 32, 32, 0.08);
+        border-color: rgba(248, 113, 113, 0.22);
+        color: #f87171;
+        background: rgba(248, 113, 113, 0.08);
       }
 
       .diff-code {
         overflow-x: auto;
         background:
-          linear-gradient(180deg, rgba(23, 18, 13, 0.025), transparent 18%),
-          rgba(253, 251, 247, 0.96);
+          linear-gradient(180deg, rgba(228, 228, 231, 0.02), transparent 18%),
+          rgba(17, 17, 20, 0.96);
       }
 
       .diff-line {
@@ -2239,7 +2239,7 @@ export class LocalHumanReviewService implements HumanReviewService {
         grid-template-columns: 56px 56px 22px minmax(0, 1fr);
         align-items: stretch;
         min-width: min(100%, 840px);
-        border-bottom: 1px solid rgba(23, 18, 13, 0.05);
+        border-bottom: 1px solid rgba(228, 228, 231, 0.06);
         font-family: "SFMono-Regular", "Menlo", "Monaco", "Courier New", monospace;
         font-size: 12px;
         line-height: 1.6;
@@ -2250,11 +2250,11 @@ export class LocalHumanReviewService implements HumanReviewService {
       }
 
       .diff-line--added {
-        background: rgba(28, 96, 55, 0.08);
+        background: rgba(110, 231, 183, 0.08);
       }
 
       .diff-line--removed {
-        background: rgba(139, 32, 32, 0.08);
+        background: rgba(248, 113, 113, 0.08);
       }
 
       .diff-line--spacer {
@@ -2266,7 +2266,7 @@ export class LocalHumanReviewService implements HumanReviewService {
         font-size: 12px;
         letter-spacing: 0.04em;
         text-transform: uppercase;
-        background: rgba(23, 18, 13, 0.04);
+        background: rgba(228, 228, 231, 0.04);
       }
 
       .diff-line-number,
@@ -2276,23 +2276,23 @@ export class LocalHumanReviewService implements HumanReviewService {
       }
 
       .diff-line-number {
-        color: rgba(23, 18, 13, 0.48);
+        color: rgba(228, 228, 231, 0.35);
         text-align: right;
         user-select: none;
       }
 
       .diff-line-sign {
-        color: rgba(23, 18, 13, 0.58);
+        color: rgba(228, 228, 231, 0.45);
         text-align: center;
         user-select: none;
       }
 
       .diff-line--added .diff-line-sign {
-        color: #1c6037;
+        color: #6ee7b7;
       }
 
       .diff-line--removed .diff-line-sign {
-        color: #8b2020;
+        color: #f87171;
       }
 
       .diff-line-code {

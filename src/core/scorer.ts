@@ -607,7 +607,7 @@ export function loadWorkspaceEnv(
 
 export interface VoteJudge {
   generateVote(input: {
-    modelId: string;
+    modelId?: string;
     rubricPrompt: string;
     incumbentEvidence: EvidenceItem[];
     candidateEvidence: EvidenceItem[];
@@ -619,7 +619,7 @@ export interface ScoringService {
   collectEvidence(rubric: NormalizedRubric, stepPath: string): Promise<EvidenceItem[]>;
   runSingleVote(input: {
     provider: ScoringProvider;
-    modelId: string;
+    modelId?: string;
     rubricPrompt: string;
     incumbentEvidence: EvidenceItem[];
     candidateEvidence: EvidenceItem[];
@@ -731,11 +731,15 @@ export class OpenRouterVoteJudge implements VoteJudge {
   ) {}
 
   public async generateVote(input: {
-    modelId: string;
+    modelId?: string;
     rubricPrompt: string;
     incumbentEvidence: EvidenceItem[];
     candidateEvidence: EvidenceItem[];
   }): Promise<ScoreVote> {
+    if (input.modelId === undefined) {
+      throw new Error("OpenRouter scoring requires a rubric or CLI model override.");
+    }
+
     const messages = [
       this.buildEvidenceMessage("Candidate A", input.incumbentEvidence),
       this.buildEvidenceMessage("Candidate B", input.candidateEvidence)
@@ -829,7 +833,7 @@ export class OpenRouterVoteJudge implements VoteJudge {
 
   private buildDebugRequestPayload(
     input: {
-      modelId: string;
+      modelId?: string;
       rubricPrompt: string;
       incumbentEvidence: EvidenceItem[];
       candidateEvidence: EvidenceItem[];
@@ -857,7 +861,7 @@ export class OpenRouterVoteJudge implements VoteJudge {
 
   private logDebugInput(payload: {
     provider: "openrouter";
-    modelId: string;
+    modelId?: string;
     system: string;
     messages: Array<{
       role: "user";
@@ -906,7 +910,7 @@ export class CodexVoteJudge implements VoteJudge {
   }
 
   public async generateVote(input: {
-    modelId: string;
+    modelId?: string;
     rubricPrompt: string;
     incumbentEvidence: EvidenceItem[];
     candidateEvidence: EvidenceItem[];
@@ -925,8 +929,6 @@ export class CodexVoteJudge implements VoteJudge {
       "--skip-git-repo-check",
       "--sandbox",
       "read-only",
-      "--model",
-      input.modelId,
       "--output-schema",
       this.schemaPath,
       "--json",
@@ -935,6 +937,9 @@ export class CodexVoteJudge implements VoteJudge {
       ...imagePaths.flatMap((imagePath) => ["--image", imagePath]),
       prompt
     ];
+    if (input.modelId) {
+      args.splice(4, 0, "--model", input.modelId);
+    }
     const requestPayload = this.buildDebugRequestPayload(input, prompt, imagePaths, args);
     this.logDebugInput(requestPayload);
     let rawOutput = "";
@@ -963,7 +968,9 @@ export class CodexVoteJudge implements VoteJudge {
 
       if (result.exitCode !== 0) {
         throw new Error(
-          `Codex scoring failed for model ${input.modelId} with exit code ${result.exitCode}.`
+          `Codex scoring failed ${
+            input.modelId ? `for model ${input.modelId} ` : "with the default model "
+          }with exit code ${result.exitCode}.`
         );
       }
 
@@ -1022,7 +1029,7 @@ export class CodexVoteJudge implements VoteJudge {
 
   private buildDebugRequestPayload(
     input: {
-      modelId: string;
+      modelId?: string;
       rubricPrompt: string;
       incumbentEvidence: EvidenceItem[];
       candidateEvidence: EvidenceItem[];
@@ -1044,7 +1051,7 @@ export class CodexVoteJudge implements VoteJudge {
 
   private logDebugInput(payload: {
     provider: "codex";
-    modelId: string;
+    modelId?: string;
     command: string[];
     prompt: string;
     imagePaths: string[];
@@ -1080,7 +1087,7 @@ export class ClaudeVoteJudge implements VoteJudge {
   ) {}
 
   public async generateVote(input: {
-    modelId: string;
+    modelId?: string;
     rubricPrompt: string;
     incumbentEvidence: EvidenceItem[];
     candidateEvidence: EvidenceItem[];
@@ -1093,12 +1100,13 @@ export class ClaudeVoteJudge implements VoteJudge {
       "--output-format",
       "stream-json",
       "--no-session-persistence",
-      "--model",
-      input.modelId,
       "--json-schema",
       JSON.stringify(scoreVoteJsonSchema),
       prompt
     ];
+    if (input.modelId) {
+      args.splice(5, 0, "--model", input.modelId);
+    }
     const requestPayload = this.buildDebugRequestPayload(input, prompt, imagePaths, args);
     this.logDebugInput(requestPayload);
     let rawOutput = "";
@@ -1123,7 +1131,9 @@ export class ClaudeVoteJudge implements VoteJudge {
 
       if (result.exitCode !== 0) {
         throw new Error(
-          `Claude scoring failed for model ${input.modelId} with exit code ${result.exitCode}.`
+          `Claude scoring failed ${
+            input.modelId ? `for model ${input.modelId} ` : "with the default model "
+          }with exit code ${result.exitCode}.`
         );
       }
 
@@ -1174,7 +1184,7 @@ export class ClaudeVoteJudge implements VoteJudge {
 
   private buildDebugRequestPayload(
     input: {
-      modelId: string;
+      modelId?: string;
       rubricPrompt: string;
       incumbentEvidence: EvidenceItem[];
       candidateEvidence: EvidenceItem[];
@@ -1196,7 +1206,7 @@ export class ClaudeVoteJudge implements VoteJudge {
 
   private logDebugInput(payload: {
     provider: "claude";
-    modelId: string;
+    modelId?: string;
     command: string[];
     prompt: string;
     imagePaths: string[];
@@ -1259,6 +1269,10 @@ export class Scorer {
           await this.executeRubricCommand(command, stepPath, executionContext);
         }
 
+        if (!commandDefinition.resultPath) {
+          continue;
+        }
+
         const label = `evidence-${index + 1}`;
         if (commandDefinition.outputType === "text") {
           const textEvidence = await this.readTextEvidence(
@@ -1279,7 +1293,22 @@ export class Scorer {
       }
 
       if (evidence.length === 0) {
-        throw new Error(`No evidence collected for ${stepPath}.`);
+        if (rubric.provider === "openrouter") {
+          throw new Error(`No evidence collected for ${stepPath}.`);
+        }
+
+        evidence.push({
+          outputType: "text",
+          label: "artifact-path",
+          content: [
+            `Inspect files directly under this absolute path: ${executionContext.resolvedStepPath}`,
+            executionContext.stepOrigin
+              ? `If browser access helps, use this origin: ${executionContext.stepOrigin}`
+              : undefined
+          ]
+            .filter((line) => line !== undefined)
+            .join("\n")
+        });
       }
 
       return evidence;
@@ -1290,7 +1319,7 @@ export class Scorer {
 
   public async runVoteSeries(input: {
     provider: ScoringProvider;
-    modelId: string;
+    modelId?: string;
     rubricPrompt: string;
     incumbentEvidence: EvidenceItem[];
     candidateEvidence: EvidenceItem[];
@@ -1323,7 +1352,7 @@ export class Scorer {
 
   public async runSingleVote(input: {
     provider: ScoringProvider;
-    modelId: string;
+    modelId?: string;
     rubricPrompt: string;
     incumbentEvidence: EvidenceItem[];
     candidateEvidence: EvidenceItem[];

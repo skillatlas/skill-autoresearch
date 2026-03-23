@@ -94,12 +94,12 @@ describe("orchestrator integration", () => {
     await fs.remove(path.join(workspaceRoot, "GENERATION.md"));
     await fs.writeFile(
       path.join(workspaceRoot, "GENERATION1.md"),
-      "---\nharness: codex\n---\nGenerate the first artifact.\n",
+      "---\nprovider: codex\n---\nGenerate the first artifact.\n",
       "utf8"
     );
     await fs.writeFile(
       path.join(workspaceRoot, "GENERATION2.md"),
-      "---\nharness: codex\n---\nGenerate the second artifact.\n",
+      "---\nprovider: codex\n---\nGenerate the second artifact.\n",
       "utf8"
     );
 
@@ -158,12 +158,12 @@ describe("orchestrator integration", () => {
     await fs.remove(path.join(workspaceRoot, "GENERATION.md"));
     await fs.writeFile(
       path.join(workspaceRoot, "GENERATION1.md"),
-      "---\nharness: codex\n---\nGenerate the first artifact.\n",
+      "---\nprovider: codex\n---\nGenerate the first artifact.\n",
       "utf8"
     );
     await fs.writeFile(
       path.join(workspaceRoot, "GENERATION2.md"),
-      "---\nharness: codex\n---\nGenerate the second artifact.\n",
+      "---\nprovider: codex\n---\nGenerate the second artifact.\n",
       "utf8"
     );
 

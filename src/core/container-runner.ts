@@ -7,14 +7,15 @@ import { execa } from "execa";
 
 import { formatCommandFailure } from "./error-format.js";
 import { Logger } from "./logger.js";
-import { GenerationHarness } from "../types/generation.js";
+import { GenerationProvider } from "../types/generation.js";
 
 export interface ContainerExecution {
   containerRoot: string;
   targetPath: string;
   prompt: string;
   label: string;
-  harness: GenerationHarness;
+  provider: GenerationProvider;
+  modelId?: string;
 }
 
 export interface ContainerRunner {
@@ -25,7 +26,7 @@ const CLAUDE_GENERATION_MAX_ATTEMPTS = 3;
 const CLAUDE_GENERATION_RETRY_DELAY_MS = 250;
 
 const require = createRequire(import.meta.url);
-const FORWARDED_ENV_VARS: Record<GenerationHarness, readonly string[]> = {
+const FORWARDED_ENV_VARS: Record<GenerationProvider, readonly string[]> = {
   claude: ["CLAUDE_CODE_OAUTH_TOKEN"],
   codex: [
     "OPENAI_API_KEY",
@@ -156,10 +157,13 @@ function buildIsolatedHomeSetupCommand(configPaths: readonly string[]): string {
   ].join("; ");
 }
 
-function buildClaudeCommand(debugGeneration: boolean): string {
+function buildClaudeCommand(
+  debugGeneration: boolean,
+  modelId: string | undefined
+): string {
   const claudeCommand = debugGeneration
-    ? 'claude --no-session-persistence --verbose --output-format stream-json -p "$2"'
-    : 'claude --no-session-persistence -p "$2"';
+    ? `claude --no-session-persistence --verbose --output-format stream-json${modelId ? ' --model "$3"' : ""} -p "$2"`
+    : `claude --no-session-persistence${modelId ? ' --model "$3"' : ""} -p "$2"`;
 
   return [
     buildIsolatedHomeSetupCommand([".claude", ".claude.json"]),
@@ -168,11 +172,11 @@ function buildClaudeCommand(debugGeneration: boolean): string {
   ].join("; ");
 }
 
-function buildCodexCommand(): string {
+function buildCodexCommand(modelId: string | undefined): string {
   return [
     buildIsolatedHomeSetupCommand([".codex"]),
     'cd "$1"',
-    'codex exec --ephemeral --skip-git-repo-check -a never --sandbox workspace-write "$2"'
+    `codex exec --ephemeral --skip-git-repo-check -a never --sandbox workspace-write${modelId ? ' --model "$3"' : ""} "$2"`
   ].join("; ");
 }
 
@@ -245,20 +249,20 @@ export function buildContainerExecArgs(
   );
   const args = [containerCliEntryPoint, "exec"];
 
-  for (const envVarName of FORWARDED_ENV_VARS[execution.harness]) {
+  for (const envVarName of FORWARDED_ENV_VARS[execution.provider]) {
     if (env[envVarName]) {
       args.push("--env", envVarName);
     }
   }
 
   const debugGeneration =
-    execution.harness === "claude" &&
+    execution.provider === "claude" &&
     env.DEBUG_GENERATION === "1" &&
     isGenerationExecution(execution);
   const agentCommand =
-    execution.harness === "claude"
-      ? buildClaudeCommand(debugGeneration)
-      : buildCodexCommand();
+    execution.provider === "claude"
+      ? buildClaudeCommand(debugGeneration, execution.modelId)
+      : buildCodexCommand(execution.modelId);
 
   args.push(
     execution.containerRoot,
@@ -270,6 +274,9 @@ export function buildContainerExecArgs(
     containerTargetPath,
     execution.prompt
   );
+  if (execution.modelId) {
+    args.push(execution.modelId);
+  }
 
   return args;
 }
@@ -290,13 +297,13 @@ export class CodeContainerRunner implements ContainerRunner {
     }
 
     const maxAttempts =
-      execution.harness === "claude" && isGenerationExecution(execution)
+      execution.provider === "claude" && isGenerationExecution(execution)
         ? CLAUDE_GENERATION_MAX_ATTEMPTS
         : 1;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       const debugGeneration =
-        execution.harness === "claude" &&
+        execution.provider === "claude" &&
         process.env.DEBUG_GENERATION === "1" &&
         isGenerationExecution(execution);
       const debugPrefix = debugGeneration
@@ -331,7 +338,7 @@ export class CodeContainerRunner implements ContainerRunner {
       });
       const shouldRetry =
         attempt < maxAttempts &&
-        execution.harness === "claude" &&
+        execution.provider === "claude" &&
         isGenerationExecution(execution) &&
         isRetriableClaudeGenerationFailure(result.all);
 
@@ -343,7 +350,7 @@ export class CodeContainerRunner implements ContainerRunner {
             maxAttempts,
             containerRoot: execution.containerRoot,
             targetPath: execution.targetPath,
-            harness: execution.harness,
+            provider: execution.provider,
             output: result.all
           },
           "container-command-retry"
@@ -357,7 +364,7 @@ export class CodeContainerRunner implements ContainerRunner {
         {
           containerRoot: execution.containerRoot,
           targetPath: execution.targetPath,
-          harness: execution.harness
+          provider: execution.provider
         },
         "container-command-failed"
       );

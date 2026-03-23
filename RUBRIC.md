@@ -1,6 +1,5 @@
 ---
-provider: claude
-model: opus
+provider: codex
 http_server: true
 commands:
   - outputType: text

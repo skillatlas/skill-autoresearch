@@ -217,7 +217,7 @@ export class FakeScorer implements ScoringService {
 
   public async runSingleVote(input: {
     provider: ScoringProvider;
-    modelId: string;
+    modelId?: string;
     rubricPrompt: string;
     incumbentEvidence: EvidenceItem[];
     candidateEvidence: EvidenceItem[];

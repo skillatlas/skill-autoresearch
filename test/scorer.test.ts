@@ -219,6 +219,56 @@ describe("scoring helpers", () => {
     });
   });
 
+  it("falls back to direct artifact inspection for local scorers without result paths", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "scorer-"));
+    await fs.ensureDir(path.join(workspaceRoot, "step"));
+    const scorer = new Scorer(
+      workspaceRoot,
+      new Logger(false),
+      {
+        openrouter: {
+          async generateVote() {
+            throw new Error("generateVote should not be called in this test");
+          }
+        },
+        codex: {
+          async generateVote() {
+            throw new Error("generateVote should not be called in this test");
+          }
+        },
+        claude: {
+          async generateVote() {
+            throw new Error("generateVote should not be called in this test");
+          }
+        }
+      },
+      false
+    );
+
+    const evidence = await scorer.collectEvidence(
+      {
+        sourcePath: "RUBRIC.md",
+        provider: "codex",
+        commands: [
+          {
+            command:
+              "node -e \"require('fs').writeFileSync(process.env.STEP_PATH + '/index.html', '<main>hello</main>')\""
+          }
+        ],
+        prompt: "Judge the outputs."
+      },
+      "step"
+    );
+
+    expect(evidence).toEqual([
+      {
+        outputType: "text",
+        label: "artifact-path",
+        content: `Inspect files directly under this absolute path: ${path.join(workspaceRoot, "step")}`
+      }
+    ]);
+  });
+
   it("provides STEP_ORIGIN when `http_server` is enabled", async () => {
     const workspaceParent = await fs.mkdtemp(path.join(os.tmpdir(), "scorer-"));
     const workspaceRoot = path.join(workspaceParent, "workspace with space");
@@ -1073,6 +1123,73 @@ fs.writeFileSync(
     }
   });
 
+  it("omits the Codex model flag when no model is provided", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "codex-no-model-"));
+    const fakeBinDir = path.join(workspaceRoot, "bin");
+    const argsLogPath = path.join(workspaceRoot, "codex-args.json");
+    await fs.ensureDir(fakeBinDir);
+    await fs.writeFile(
+      path.join(fakeBinDir, "codex"),
+      `#!/usr/bin/env node
+import fs from "node:fs";
+
+const args = process.argv.slice(2);
+fs.writeFileSync(process.env.CODEX_ARGS_LOG_PATH, JSON.stringify(args));
+
+const outputPathIndex = args.indexOf("-o");
+if (outputPathIndex === -1 || !args[outputPathIndex + 1]) {
+  process.exit(2);
+}
+
+fs.writeFileSync(
+  args[outputPathIndex + 1],
+  JSON.stringify({
+    winner: "B",
+    confidence: 0.9,
+    rationale: "Candidate B is stronger."
+  })
+);
+`,
+      "utf8"
+    );
+    await fs.chmod(path.join(fakeBinDir, "codex"), 0o755);
+
+    const previousPath = process.env.PATH;
+    const previousArgsLogPath = process.env.CODEX_ARGS_LOG_PATH;
+    process.env.PATH = `${fakeBinDir}${path.delimiter}${previousPath ?? ""}`;
+    process.env.CODEX_ARGS_LOG_PATH = argsLogPath;
+
+    try {
+      await new CodexVoteJudge(workspaceRoot, new Logger(false), false).generateVote({
+        rubricPrompt: "Pick the stronger candidate.",
+        incumbentEvidence: [
+          {
+            outputType: "text",
+            label: "markup",
+            content: "<main>A</main>"
+          }
+        ],
+        candidateEvidence: [
+          {
+            outputType: "text",
+            label: "markup",
+            content: "<main>B</main>"
+          }
+        ]
+      });
+
+      const args = await fs.readJson(argsLogPath);
+      expect(args).not.toContain("--model");
+    } finally {
+      process.env.PATH = previousPath;
+      if (previousArgsLogPath === undefined) {
+        delete process.env.CODEX_ARGS_LOG_PATH;
+      } else {
+        process.env.CODEX_ARGS_LOG_PATH = previousArgsLogPath;
+      }
+    }
+  });
+
   it("builds a mixed Claude prompt with stable image ordering", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "claude-"));
     const prompt = (new ClaudeVoteJudge(workspaceRoot, new Logger(false), false) as any)
@@ -1310,6 +1427,66 @@ process.stdout.write(JSON.stringify({
         delete process.env.DEBUG_LOG_SCORING;
       } else {
         process.env.DEBUG_LOG_SCORING = previousDebugLogScoring;
+      }
+    }
+  });
+
+  it("omits the Claude model flag when no model is provided", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "claude-no-model-"));
+    const fakeBinDir = path.join(workspaceRoot, "bin");
+    const argsLogPath = path.join(workspaceRoot, "claude-args.json");
+    await fs.ensureDir(fakeBinDir);
+    await fs.writeFile(
+      path.join(fakeBinDir, "claude"),
+      `#!/usr/bin/env node
+import fs from "node:fs";
+
+fs.writeFileSync(process.env.CLAUDE_ARGS_LOG_PATH, JSON.stringify(process.argv.slice(2)));
+process.stdout.write(JSON.stringify({
+  type: "result",
+  structured_output: {
+    winner: "B",
+    confidence: 0.75,
+    rationale: "Candidate B is stronger."
+  }
+}));
+`,
+      "utf8"
+    );
+    await fs.chmod(path.join(fakeBinDir, "claude"), 0o755);
+
+    const previousPath = process.env.PATH;
+    const previousArgsLogPath = process.env.CLAUDE_ARGS_LOG_PATH;
+    process.env.PATH = `${fakeBinDir}${path.delimiter}${previousPath ?? ""}`;
+    process.env.CLAUDE_ARGS_LOG_PATH = argsLogPath;
+
+    try {
+      await new ClaudeVoteJudge(workspaceRoot, new Logger(false), false).generateVote({
+        rubricPrompt: "Pick the stronger candidate.",
+        incumbentEvidence: [
+          {
+            outputType: "text",
+            label: "markup",
+            content: "<main>A</main>"
+          }
+        ],
+        candidateEvidence: [
+          {
+            outputType: "text",
+            label: "markup",
+            content: "<main>B</main>"
+          }
+        ]
+      });
+
+      const args = await fs.readJson(argsLogPath);
+      expect(args).not.toContain("--model");
+    } finally {
+      process.env.PATH = previousPath;
+      if (previousArgsLogPath === undefined) {
+        delete process.env.CLAUDE_ARGS_LOG_PATH;
+      } else {
+        process.env.CLAUDE_ARGS_LOG_PATH = previousArgsLogPath;
       }
     }
   });

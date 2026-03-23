@@ -1,5 +1,5 @@
 ---
-harness: claude
+provider: claude
 ---
 
 Generate the current artifact set.
