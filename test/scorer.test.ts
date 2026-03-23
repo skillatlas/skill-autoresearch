@@ -1,6 +1,7 @@
 import fs from "fs-extra";
 import os from "node:os";
 import path from "node:path";
+import { vi } from "vitest";
 
 import { Logger } from "../src/core/logger.js";
 import {
@@ -959,6 +960,26 @@ if (outputPathIndex === -1 || !args[outputPathIndex + 1]) {
   process.exit(2);
 }
 
+process.stdout.write(JSON.stringify({
+  type: "thread.started",
+  thread_id: "thread_123"
+}) + "\\n");
+process.stdout.write(JSON.stringify({
+  type: "item.completed",
+  item: {
+    id: "item_0",
+    type: "agent_message",
+    text: "Candidate B is stronger."
+  }
+}) + "\\n");
+process.stdout.write(JSON.stringify({
+  type: "turn.completed",
+  usage: {
+    input_tokens: 10,
+    output_tokens: 5
+  }
+}));
+
 fs.writeFileSync(
   args[outputPathIndex + 1],
   JSON.stringify({
@@ -1017,7 +1038,30 @@ fs.writeFileSync(
       expect(logPayload.request.provider).toBe("codex");
       expect(logPayload.request.prompt).toContain("Pick the stronger candidate.");
       expect(logPayload.request.prompt).toContain("Evidence 1 (markup) [text]:");
+      expect(logPayload.request.command).toContain("--json");
       expect(logPayload.response.rawOutput).toContain('"winner":"B"');
+      expect(logPayload.response.rawEventOutput).toContain('"type":"thread.started"');
+      expect(logPayload.response.eventStream).toEqual([
+        {
+          type: "thread.started",
+          thread_id: "thread_123"
+        },
+        {
+          type: "item.completed",
+          item: {
+            id: "item_0",
+            type: "agent_message",
+            text: "Candidate B is stronger."
+          }
+        },
+        {
+          type: "turn.completed",
+          usage: {
+            input_tokens: 10,
+            output_tokens: 5
+          }
+        }
+      ]);
       expect(logPayload.response.structuredOutput).toEqual(vote);
     } finally {
       process.env.PATH = previousPath;
@@ -1090,6 +1134,27 @@ import fs from "node:fs";
 
 fs.writeFileSync(process.env.CLAUDE_ARGS_LOG_PATH, JSON.stringify(process.argv.slice(2)));
 process.stdout.write(JSON.stringify({
+  type: "system",
+  subtype: "init"
+}) + "\\n");
+process.stdout.write(JSON.stringify({
+  type: "assistant",
+  message: {
+    content: [
+      {
+        type: "tool_use",
+        name: "StructuredOutput",
+        input: {
+          winner: "B",
+          confidence: 0.75,
+          rationale: "Candidate B is stronger."
+        }
+      }
+    ]
+  }
+}) + "\\n");
+process.stdout.write(JSON.stringify({
+  type: "result",
   structured_output: {
     winner: "B",
     confidence: 0.75,
@@ -1139,7 +1204,9 @@ process.stdout.write(JSON.stringify({
       });
 
       const args = await fs.readJson(argsLogPath);
-      expect(args).toEqual(expect.arrayContaining(["-p", "--output-format", "json"]));
+      expect(args).toEqual(
+        expect.arrayContaining(["-p", "--verbose", "--output-format", "stream-json"])
+      );
       expect(args).toEqual(expect.arrayContaining(["--model", "claude-opus-4-1"]));
       expect(args).toContain("--json-schema");
       expect(args.at(-1)).toContain(
@@ -1151,6 +1218,98 @@ process.stdout.write(JSON.stringify({
         delete process.env.CLAUDE_ARGS_LOG_PATH;
       } else {
         process.env.CLAUDE_ARGS_LOG_PATH = previousArgsLogPath;
+      }
+    }
+  });
+
+  it("writes Claude stream-json events to the scoring debug log", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "claude-score-log-"));
+    const fakeBinDir = path.join(workspaceRoot, "bin");
+    const previousDebugLogScoring = process.env.DEBUG_LOG_SCORING;
+    const previousPath = process.env.PATH;
+    process.env.DEBUG_LOG_SCORING = "1";
+    await fs.ensureDir(fakeBinDir);
+    await fs.writeFile(
+      path.join(fakeBinDir, "claude"),
+      `#!/usr/bin/env node
+process.stdout.write(JSON.stringify({
+  type: "system",
+  subtype: "init"
+}) + "\\n");
+process.stdout.write(JSON.stringify({
+  type: "result",
+  structured_output: {
+    winner: "A",
+    confidence: 0.8,
+    rationale: "Candidate A is stronger."
+  }
+}));
+`,
+      "utf8"
+    );
+    await fs.chmod(path.join(fakeBinDir, "claude"), 0o755);
+    process.env.PATH = `${fakeBinDir}${path.delimiter}${previousPath ?? ""}`;
+
+    try {
+      const vote = await new ClaudeVoteJudge(
+        workspaceRoot,
+        new Logger(false),
+        false
+      ).generateVote({
+        modelId: "claude-opus-4-1",
+        rubricPrompt: "Pick the stronger candidate.",
+        incumbentEvidence: [
+          {
+            outputType: "text",
+            label: "markup",
+            content: "<main>A</main>"
+          }
+        ],
+        candidateEvidence: [
+          {
+            outputType: "text",
+            label: "markup",
+            content: "<main>B</main>"
+          }
+        ]
+      });
+
+      expect(vote).toEqual({
+        winner: "A",
+        confidence: 0.8,
+        rationale: "Candidate A is stronger."
+      });
+
+      const logDir = path.join(workspaceRoot, "log");
+      const files = await fs.readdir(logDir);
+      expect(files).toHaveLength(1);
+
+      const logPayload = await fs.readJson(path.join(logDir, files[0]!));
+      expect(logPayload.response.structuredOutput).toEqual({
+        winner: "A",
+        confidence: 0.8,
+        rationale: "Candidate A is stronger."
+      });
+      expect(logPayload.response.streamEvents).toEqual([
+        {
+          type: "system",
+          subtype: "init"
+        },
+        {
+          type: "result",
+          structured_output: {
+            winner: "A",
+            confidence: 0.8,
+            rationale: "Candidate A is stronger."
+          }
+        }
+      ]);
+    } finally {
+      process.env.PATH = previousPath;
+      if (previousDebugLogScoring === undefined) {
+        delete process.env.DEBUG_LOG_SCORING;
+      } else {
+        process.env.DEBUG_LOG_SCORING = previousDebugLogScoring;
       }
     }
   });
@@ -1187,7 +1346,7 @@ process.stdout.write(JSON.stringify({
         },
         "Prompt text",
         [path.join(workspaceRoot, "b.png")],
-        ["-p", "--output-format", "json", "Prompt text"]
+        ["-p", "--verbose", "--output-format", "stream-json", "Prompt text"]
       );
       judge.logDebugInput(payload);
 
@@ -1214,6 +1373,11 @@ process.stdout.write(JSON.stringify({
       path.join(fakeBinDir, "claude"),
       `#!/usr/bin/env node
 process.stdout.write(JSON.stringify({
+  type: "system",
+  subtype: "init"
+}) + "\\n");
+process.stdout.write(JSON.stringify({
+  type: "result",
   structured_output: {
     winner: "B",
     confidence: 0.75,
@@ -1270,7 +1434,22 @@ process.stdout.write(JSON.stringify({
       expect(logPayload.request.provider).toBe("claude");
       expect(logPayload.request.prompt).toContain("Pick the stronger candidate.");
       expect(logPayload.request.prompt).toContain("Evidence 1 (markup) [text]:");
+      expect(logPayload.response.rawOutput).toContain('"type":"system"');
       expect(logPayload.response.rawOutput).toContain('"structured_output"');
+      expect(logPayload.response.streamEvents).toEqual([
+        {
+          type: "system",
+          subtype: "init"
+        },
+        {
+          type: "result",
+          structured_output: {
+            winner: "B",
+            confidence: 0.75,
+            rationale: "Candidate B is stronger."
+          }
+        }
+      ]);
       expect(logPayload.response.structuredOutput).toEqual(vote);
     } finally {
       process.env.PATH = previousPath;

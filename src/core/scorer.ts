@@ -204,6 +204,40 @@ async function writeScoreDebugLogFile(input: {
   }
 }
 
+function parseJsonLineStream(source: string, rawOutput: string): unknown[] {
+  return rawOutput
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line, index) => {
+      try {
+        return JSON.parse(line) as unknown;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `${source} emitted invalid JSONL on line ${index + 1}: ${message}`
+        );
+      }
+    });
+}
+
+function extractClaudeStructuredOutput(streamEvents: unknown[]): unknown {
+  for (let index = streamEvents.length - 1; index >= 0; index -= 1) {
+    const event = streamEvents[index];
+    if (
+      typeof event === "object" &&
+      event !== null &&
+      "type" in event &&
+      (event as { type?: unknown }).type === "result" &&
+      "structured_output" in event
+    ) {
+      return (event as { structured_output?: unknown }).structured_output;
+    }
+  }
+
+  return undefined;
+}
+
 function tokenizeShellCommand(command: string): string[] | undefined {
   const tokens: string[] = [];
   let current = "";
@@ -895,6 +929,7 @@ export class CodexVoteJudge implements VoteJudge {
       input.modelId,
       "--output-schema",
       this.schemaPath,
+      "--json",
       "-o",
       outputPath,
       ...imagePaths.flatMap((imagePath) => ["--image", imagePath]),
@@ -903,6 +938,8 @@ export class CodexVoteJudge implements VoteJudge {
     const requestPayload = this.buildDebugRequestPayload(input, prompt, imagePaths, args);
     this.logDebugInput(requestPayload);
     let rawOutput = "";
+    let rawEventOutput = "";
+    let eventStream: unknown[] = [];
 
     if (this.verbose) {
       this.logger.debug(`codex ${args.join(" ")}`);
@@ -917,6 +954,11 @@ export class CodexVoteJudge implements VoteJudge {
 
       if (this.verbose && result.all?.trim()) {
         this.logger.debug(result.all);
+      }
+
+      rawEventOutput = result.stdout.trim();
+      if (rawEventOutput.length > 0) {
+        eventStream = parseJsonLineStream("Codex scoring", rawEventOutput);
       }
 
       if (result.exitCode !== 0) {
@@ -938,6 +980,8 @@ export class CodexVoteJudge implements VoteJudge {
         request: requestPayload,
         response: {
           rawOutput,
+          rawEventOutput: rawEventOutput.length > 0 ? rawEventOutput : undefined,
+          eventStream: eventStream.length > 0 ? eventStream : undefined,
           structuredOutput: vote
         }
       });
@@ -949,7 +993,9 @@ export class CodexVoteJudge implements VoteJudge {
         request: requestPayload,
         error: {
           ...serializeScoreDebugError(error),
-          rawOutput: rawOutput.length > 0 ? rawOutput : undefined
+          rawOutput: rawOutput.length > 0 ? rawOutput : undefined,
+          rawEventOutput: rawEventOutput.length > 0 ? rawEventOutput : undefined,
+          eventStream: eventStream.length > 0 ? eventStream : undefined
         }
       });
       throw error;
@@ -1043,8 +1089,9 @@ export class ClaudeVoteJudge implements VoteJudge {
     const prompt = this.buildPrompt(input);
     const args = [
       "-p",
+      "--verbose",
       "--output-format",
-      "json",
+      "stream-json",
       "--no-session-persistence",
       "--model",
       input.modelId,
@@ -1055,6 +1102,7 @@ export class ClaudeVoteJudge implements VoteJudge {
     const requestPayload = this.buildDebugRequestPayload(input, prompt, imagePaths, args);
     this.logDebugInput(requestPayload);
     let rawOutput = "";
+    let streamEvents: unknown[] = [];
 
     if (this.verbose) {
       this.logger.debug(`claude ${args.join(" ")}`);
@@ -1071,31 +1119,32 @@ export class ClaudeVoteJudge implements VoteJudge {
         this.logger.debug(result.all);
       }
 
+      rawOutput = result.stdout.trim();
+
       if (result.exitCode !== 0) {
         throw new Error(
           `Claude scoring failed for model ${input.modelId} with exit code ${result.exitCode}.`
         );
       }
 
-      rawOutput = result.stdout.trim();
       if (rawOutput.length === 0) {
         throw new Error("Claude scoring returned empty output.");
       }
 
-      const parsedOutput = JSON.parse(rawOutput) as {
-        structured_output?: unknown;
-      };
-      if (parsedOutput.structured_output === undefined) {
+      streamEvents = parseJsonLineStream("Claude scoring stream-json", rawOutput);
+      const structuredOutput = extractClaudeStructuredOutput(streamEvents);
+      if (structuredOutput === undefined) {
         throw new Error("Claude scoring did not return structured_output.");
       }
 
-      const vote = scoreVoteSchema.parse(parsedOutput.structured_output);
+      const vote = scoreVoteSchema.parse(structuredOutput);
       await this.writeDebugLogFile({
         provider: "claude",
         loggedAt: new Date().toISOString(),
         request: requestPayload,
         response: {
           rawOutput,
+          streamEvents,
           structuredOutput: vote
         }
       });
@@ -1107,7 +1156,8 @@ export class ClaudeVoteJudge implements VoteJudge {
         request: requestPayload,
         error: {
           ...serializeScoreDebugError(error),
-          rawOutput: rawOutput.length > 0 ? rawOutput : undefined
+          rawOutput: rawOutput.length > 0 ? rawOutput : undefined,
+          streamEvents: streamEvents.length > 0 ? streamEvents : undefined
         }
       });
       throw error;

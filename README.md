@@ -108,7 +108,7 @@ The generation harness runs inside an isolated container. These variables are fo
 |---|---|
 | `DEBUG_GENERATION=1` | Stream verbose output from Claude during generation |
 | `DEBUG_SCORE=1` | Log scoring inputs to JSONL |
-| `DEBUG_LOG_SCORING=1` | Write one JSON file per scoring call to `./log/` with request and response payloads for OpenRouter, Codex, and Claude |
+| `DEBUG_LOG_SCORING=1` | Write one JSON file per scoring call to `./log/`; Claude logs include the full `stream-json` event output |
 
 **Example `.env`:**
 
