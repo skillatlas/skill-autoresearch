@@ -302,7 +302,7 @@ if (command === "screenshot") {
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line) as string[]);
-      expect(commandLog).toHaveLength(4);
+      expect(commandLog).toHaveLength(5);
       const sessionFlag = commandLog[0]?.[0];
       expect(sessionFlag).toMatch(/^-s=capture-/);
       expect(commandLog[0]).toEqual([
@@ -313,11 +313,17 @@ if (command === "screenshot") {
       expect(commandLog[1]).toEqual([sessionFlag, "resize", "1440", "1080"]);
       expect(commandLog[2]).toEqual([
         sessionFlag,
+        "run-code",
+        expect.stringContaining("document.getAnimations")
+      ]);
+      expect(commandLog[3]).toEqual([
+        sessionFlag,
         "screenshot",
         "--filename",
-        path.join(absoluteStepPath, "index.png")
+        path.join(absoluteStepPath, "index.png"),
+        "--full-page"
       ]);
-      expect(commandLog[3]).toEqual([sessionFlag, "close"]);
+      expect(commandLog[4]).toEqual([sessionFlag, "close"]);
     } finally {
       process.env.PATH = previousPath;
       if (previousLogPath == null) {
@@ -617,7 +623,7 @@ if (command === "close") {
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line) as { sessionId: string; command: string });
-      expect(commandLog).toHaveLength(8);
+      expect(commandLog).toHaveLength(10);
       const firstSessionId = commandLog[0]?.sessionId;
       const secondSessionId = commandLog.find(
         (entry) => entry.sessionId !== firstSessionId
@@ -627,10 +633,12 @@ if (command === "close") {
       expect(commandLog.map((entry) => `${entry.sessionId}:${entry.command}`)).toEqual([
         `${firstSessionId}:open`,
         `${firstSessionId}:resize`,
+        `${firstSessionId}:run-code`,
         `${firstSessionId}:screenshot`,
         `${firstSessionId}:close`,
         `${secondSessionId}:open`,
         `${secondSessionId}:resize`,
+        `${secondSessionId}:run-code`,
         `${secondSessionId}:screenshot`,
         `${secondSessionId}:close`
       ]);

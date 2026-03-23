@@ -357,6 +357,91 @@ function createRubricRunId(): string {
   return `rubric-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+const SCREENSHOT_SETTLE_SCRIPT = String.raw`async (page) => {
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  const waitForAnimationsToSettle = async (timeoutMs) => {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      const pendingAnimations = await page.evaluate(() => {
+        if (typeof document === "undefined" || typeof document.getAnimations !== "function") {
+          return 0;
+        }
+
+        return document
+          .getAnimations({ subtree: true })
+          .filter((animation) => {
+            const state = animation.playState;
+            return state === "running" || state === "pending";
+          }).length;
+      });
+
+      if (pendingAnimations === 0) {
+        return;
+      }
+
+      await sleep(100);
+    }
+  };
+
+  await page.waitForLoadState("domcontentloaded");
+  await page.waitForLoadState("networkidle", { timeout: 5000 }).catch(() => undefined);
+  await page
+    .evaluate(async () => {
+      if ("fonts" in document) {
+        await document.fonts.ready;
+      }
+    })
+    .catch(() => undefined);
+
+  await waitForAnimationsToSettle(1500);
+
+  const pageMetrics = await page.evaluate(() => ({
+    viewportHeight: window.innerHeight,
+    scrollHeight: Math.max(
+      document.documentElement?.scrollHeight ?? 0,
+      document.body?.scrollHeight ?? 0
+    )
+  }));
+
+  const viewportHeight = Math.max(pageMetrics.viewportHeight, 1);
+  const scrollStep = Math.max(Math.floor(viewportHeight * 0.75), 1);
+  let scrollTop = 0;
+
+  while (true) {
+    await page.evaluate((offset) => window.scrollTo(0, offset), scrollTop);
+    await sleep(250);
+    await waitForAnimationsToSettle(1000);
+
+    const nextScrollTop = await page.evaluate(
+      ({ currentScrollTop, viewportHeight: currentViewportHeight, scrollStep: currentScrollStep }) => {
+        const currentMaxScrollTop = Math.max(
+          (document.documentElement?.scrollHeight ?? 0) - currentViewportHeight,
+          (document.body?.scrollHeight ?? 0) - currentViewportHeight,
+          0
+        );
+
+        if (currentScrollTop >= currentMaxScrollTop) {
+          return null;
+        }
+
+        return Math.min(currentScrollTop + currentScrollStep, currentMaxScrollTop);
+      },
+      { currentScrollTop: scrollTop, viewportHeight, scrollStep }
+    );
+
+    if (nextScrollTop == null) {
+      break;
+    }
+
+    scrollTop = nextScrollTop;
+  }
+
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await sleep(250);
+  await waitForAnimationsToSettle(1500);
+}`;
+
 export function summarizeVotes(
   votes: ReadonlyArray<ScoreVote | VoteRecord>
 ): CandidateComparison {
@@ -979,7 +1064,14 @@ export class Scorer {
           for (const args of [
             [`-s=${sessionId}`, "open", pageUrl],
             [`-s=${sessionId}`, "resize", "1440", "1080"],
-            [`-s=${sessionId}`, "screenshot", "--filename", resolvedOutputPath]
+            [`-s=${sessionId}`, "run-code", SCREENSHOT_SETTLE_SCRIPT],
+            [
+              `-s=${sessionId}`,
+              "screenshot",
+              "--filename",
+              resolvedOutputPath,
+              "--full-page"
+            ]
           ]) {
             const result = await execa("playwright-cli", args, {
               cwd: this.workspaceRoot,
