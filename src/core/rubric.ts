@@ -1,7 +1,9 @@
 import fs from "fs-extra";
 import matter from "gray-matter";
+import path from "node:path";
 import { z } from "zod";
 
+import { inferLocalAgent } from "./local-agent-inference.js";
 import {
   NormalizedRubric,
   normalizedRubricSchema,
@@ -17,7 +19,7 @@ const rawRubricCommandSchema = z.object({
 
 const rawRubricFrontmatterSchema = z
   .object({
-    provider: z.enum(["openrouter", "codex"]),
+    provider: z.enum(["openrouter", "codex", "claude"]).optional(),
     model: z.string().min(1),
     http_server: rubricHttpServerSchema.optional(),
     outputType: evidenceOutputTypeSchema.optional(),
@@ -95,6 +97,8 @@ export async function loadRubric(rubricPath: string): Promise<NormalizedRubric> 
   const parsed = matter(rawRubric);
   const frontmatter = rawRubricFrontmatterSchema.parse(parsed.data);
   const prompt = parsed.content.trim();
+  const provider =
+    frontmatter.provider ?? (await inferLocalAgent(path.dirname(rubricPath)));
 
   if (prompt.length === 0) {
     throw new Error("Rubric body must not be empty.");
@@ -120,7 +124,7 @@ export async function loadRubric(rubricPath: string): Promise<NormalizedRubric> 
 
   return normalizedRubricSchema.parse({
     sourcePath: rubricPath,
-    provider: frontmatter.provider,
+    provider,
     modelId: frontmatter.model,
     httpServerPort:
       frontmatter.http_server === true

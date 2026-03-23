@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { Logger } from "../src/core/logger.js";
 import {
+  ClaudeVoteJudge,
   CodexVoteJudge,
   OpenRouterVoteJudge,
   Scorer,
@@ -64,6 +65,11 @@ describe("scoring helpers", () => {
           async generateVote() {
             throw new Error("generateVote should not be called in this test");
           }
+        },
+        claude: {
+          async generateVote() {
+            throw new Error("generateVote should not be called in this test");
+          }
         }
       },
       false
@@ -103,6 +109,11 @@ describe("scoring helpers", () => {
           }
         },
         codex: {
+          async generateVote() {
+            throw new Error("generateVote should not be called in this test");
+          }
+        },
+        claude: {
           async generateVote() {
             throw new Error("generateVote should not be called in this test");
           }
@@ -158,6 +169,11 @@ describe("scoring helpers", () => {
           }
         },
         codex: {
+          async generateVote() {
+            throw new Error("generateVote should not be called in this test");
+          }
+        },
+        claude: {
           async generateVote() {
             throw new Error("generateVote should not be called in this test");
           }
@@ -257,6 +273,11 @@ if (command === "screenshot") {
           }
         },
         codex: {
+          async generateVote() {
+            throw new Error("generateVote should not be called in this test");
+          }
+        },
+        claude: {
           async generateVote() {
             throw new Error("generateVote should not be called in this test");
           }
@@ -389,6 +410,11 @@ if (command === "screenshot") {
           }
         },
         codex: {
+          async generateVote() {
+            throw new Error("generateVote should not be called in this test");
+          }
+        },
+        claude: {
           async generateVote() {
             throw new Error("generateVote should not be called in this test");
           }
@@ -555,6 +581,11 @@ if (command === "close") {
           }
         },
         codex: {
+          async generateVote() {
+            throw new Error("generateVote should not be called in this test");
+          }
+        },
+        claude: {
           async generateVote() {
             throw new Error("generateVote should not be called in this test");
           }
@@ -900,6 +931,181 @@ if (command === "close") {
       const [message] = infoSpy.mock.calls[0];
       expect(message).toContain("Codex scoring input");
       expect(message).toContain('"provider": "codex"');
+      expect(message).toContain('"prompt": "Prompt text"');
+    } finally {
+      if (previousDebugScore === undefined) {
+        delete process.env.DEBUG_SCORE;
+      } else {
+        process.env.DEBUG_SCORE = previousDebugScore;
+      }
+      infoSpy.mockRestore();
+    }
+  });
+
+  it("builds a mixed Claude prompt with stable image ordering", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "claude-"));
+    const prompt = (new ClaudeVoteJudge(workspaceRoot, new Logger(false), false) as any)
+      .buildPrompt({
+        rubricPrompt: "Pick the stronger candidate.",
+        incumbentEvidence: [
+          {
+            outputType: "text",
+            label: "markup",
+            content: "<main>A</main>"
+          },
+          {
+            outputType: "image",
+            label: "hero",
+            path: path.join(workspaceRoot, "a.png"),
+            mimeType: "image/png",
+            bytes: Buffer.from("a")
+          }
+        ],
+        candidateEvidence: [
+          {
+            outputType: "image",
+            label: "hero",
+            path: path.join(workspaceRoot, "b.png"),
+            mimeType: "image/png",
+            bytes: Buffer.from("b")
+          },
+          {
+            outputType: "text",
+            label: "markup",
+            content: "<main>B</main>"
+          }
+        ]
+      });
+
+    expect(prompt).toContain("Evidence 1 (markup) [text]:");
+    expect(prompt).toContain("<main>A</main>");
+    expect(prompt).toContain(
+      `Evidence 2 (hero) [image path]: ${path.join(workspaceRoot, "a.png")}`
+    );
+    expect(prompt).toContain(
+      `Evidence 1 (hero) [image path]: ${path.join(workspaceRoot, "b.png")}`
+    );
+    expect(prompt).toContain("Evidence 2 (markup) [text]:");
+    expect(prompt).toContain(
+      "Use the image paths above as direct image inputs when judging the candidates."
+    );
+  });
+
+  it("parses Claude structured_output when scoring", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "claude-"));
+    const fakeBinDir = path.join(workspaceRoot, "bin");
+    const argsLogPath = path.join(workspaceRoot, "claude-args.json");
+    await fs.ensureDir(fakeBinDir);
+    await fs.writeFile(
+      path.join(fakeBinDir, "claude"),
+      `#!/usr/bin/env node
+import fs from "node:fs";
+
+fs.writeFileSync(process.env.CLAUDE_ARGS_LOG_PATH, JSON.stringify(process.argv.slice(2)));
+process.stdout.write(JSON.stringify({
+  structured_output: {
+    winner: "B",
+    confidence: 0.75,
+    rationale: "Candidate B is stronger."
+  }
+}));
+`,
+      "utf8"
+    );
+    await fs.chmod(path.join(fakeBinDir, "claude"), 0o755);
+
+    const previousPath = process.env.PATH;
+    const previousArgsLogPath = process.env.CLAUDE_ARGS_LOG_PATH;
+    process.env.PATH = `${fakeBinDir}${path.delimiter}${previousPath ?? ""}`;
+    process.env.CLAUDE_ARGS_LOG_PATH = argsLogPath;
+
+    try {
+      const vote = await new ClaudeVoteJudge(
+        workspaceRoot,
+        new Logger(false),
+        false
+      ).generateVote({
+        modelId: "claude-opus-4-1",
+        rubricPrompt: "Pick the stronger candidate.",
+        incumbentEvidence: [
+          {
+            outputType: "text",
+            label: "markup",
+            content: "<main>A</main>"
+          }
+        ],
+        candidateEvidence: [
+          {
+            outputType: "image",
+            label: "hero",
+            path: path.join(workspaceRoot, "b.png"),
+            mimeType: "image/png",
+            bytes: Buffer.from("b")
+          }
+        ]
+      });
+
+      expect(vote).toEqual({
+        winner: "B",
+        confidence: 0.75,
+        rationale: "Candidate B is stronger."
+      });
+
+      const args = await fs.readJson(argsLogPath);
+      expect(args).toEqual(expect.arrayContaining(["-p", "--output-format", "json"]));
+      expect(args).toEqual(expect.arrayContaining(["--model", "claude-opus-4-1"]));
+      expect(args).toContain("--json-schema");
+      expect(args.at(-1)).toContain(
+        `Evidence 1 (hero) [image path]: ${path.join(workspaceRoot, "b.png")}`
+      );
+    } finally {
+      process.env.PATH = previousPath;
+      if (previousArgsLogPath === undefined) {
+        delete process.env.CLAUDE_ARGS_LOG_PATH;
+      } else {
+        process.env.CLAUDE_ARGS_LOG_PATH = previousArgsLogPath;
+      }
+    }
+  });
+
+  it("logs the Claude scoring input when DEBUG_SCORE=1", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "claude-"));
+    const logger = new Logger(false);
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => undefined);
+    const previousDebugScore = process.env.DEBUG_SCORE;
+    process.env.DEBUG_SCORE = "1";
+
+    try {
+      (new ClaudeVoteJudge(workspaceRoot, logger, false) as any).logDebugInput(
+        {
+          modelId: "claude-opus-4-1",
+          rubricPrompt: "Judge the candidates.",
+          incumbentEvidence: [
+            {
+              outputType: "text",
+              label: "markup",
+              content: "<main>A</main>"
+            }
+          ],
+          candidateEvidence: [
+            {
+              outputType: "image",
+              label: "shot",
+              path: path.join(workspaceRoot, "b.png"),
+              mimeType: "image/png",
+              bytes: Buffer.from("b")
+            }
+          ]
+        },
+        "Prompt text",
+        [path.join(workspaceRoot, "b.png")],
+        ["-p", "--output-format", "json", "Prompt text"]
+      );
+
+      expect(infoSpy).toHaveBeenCalledTimes(1);
+      const [message] = infoSpy.mock.calls[0];
+      expect(message).toContain("Claude scoring input");
+      expect(message).toContain('"provider": "claude"');
       expect(message).toContain('"prompt": "Prompt text"');
     } finally {
       if (previousDebugScore === undefined) {

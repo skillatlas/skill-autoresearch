@@ -8,6 +8,36 @@ import {
   loadRubric
 } from "../src/core/rubric.js";
 
+const INFERENCE_ENV_KEYS = [
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "HOME"
+] as const;
+
+async function withClearedInferenceEnv<T>(callback: () => Promise<T>): Promise<T> {
+  const previousEnv = Object.fromEntries(
+    INFERENCE_ENV_KEYS.map((key) => [key, process.env[key]])
+  ) as Record<(typeof INFERENCE_ENV_KEYS)[number], string | undefined>;
+
+  for (const key of INFERENCE_ENV_KEYS) {
+    delete process.env[key];
+  }
+
+  try {
+    return await callback();
+  } finally {
+    for (const key of INFERENCE_ENV_KEYS) {
+      const previousValue = previousEnv[key];
+      if (previousValue == null) {
+        delete process.env[key];
+      } else {
+        process.env[key] = previousValue;
+      }
+    }
+  }
+}
+
 describe("rubric parsing", () => {
   it("normalizes a single-command rubric", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "rubric-"));
@@ -176,23 +206,51 @@ Judge the outputs.`,
     expect(rubric.httpServerPort).toBe(8080);
   });
 
-  it("requires an explicit scoring provider", async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "rubric-"));
-    const rubricPath = path.join(tempDir, "RUBRIC.md");
+  it("infers a scoring provider when omitted", async () => {
+    await withClearedInferenceEnv(async () => {
+      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "rubric-"));
+      const rubricPath = path.join(tempDir, "RUBRIC.md");
 
-    await fs.writeFile(
-      rubricPath,
-      `---
+      process.env.CLAUDE_CODE_OAUTH_TOKEN = "claude-token";
+
+      await fs.writeFile(
+        rubricPath,
+        `---
 model: openai/gpt-4.1
 outputType: text
 resultPath: "$STEP_PATH/index.html"
 ---
 
 Judge the outputs.`,
-      "utf8"
-    );
+        "utf8"
+      );
 
-    await expect(loadRubric(rubricPath)).rejects.toThrow();
+      const rubric = await loadRubric(rubricPath);
+      expect(rubric.provider).toBe("claude");
+    });
+  });
+
+  it("rejects a rubric without a provider when no local agent can be inferred", async () => {
+    await withClearedInferenceEnv(async () => {
+      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "rubric-"));
+      const rubricPath = path.join(tempDir, "RUBRIC.md");
+
+      await fs.writeFile(
+        rubricPath,
+        `---
+model: openai/gpt-4.1
+outputType: text
+resultPath: "$STEP_PATH/index.html"
+---
+
+Judge the outputs.`,
+        "utf8"
+      );
+
+      await expect(loadRubric(rubricPath)).rejects.toThrow(
+        "Unable to infer a local agent."
+      );
+    });
   });
 
   it("supports an explicit scoring provider", async () => {
@@ -215,6 +273,28 @@ Judge the outputs.`,
     const rubric = await loadRubric(rubricPath);
     expect(rubric.provider).toBe("codex");
     expect(rubric.modelId).toBe("gpt-5.4");
+  });
+
+  it("supports Claude as a scoring provider", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "rubric-"));
+    const rubricPath = path.join(tempDir, "RUBRIC.md");
+
+    await fs.writeFile(
+      rubricPath,
+      `---
+provider: claude
+model: claude-opus-4-1
+outputType: text
+resultPath: "$STEP_PATH/index.html"
+---
+
+Judge the outputs.`,
+      "utf8"
+    );
+
+    const rubric = await loadRubric(rubricPath);
+    expect(rubric.provider).toBe("claude");
+    expect(rubric.modelId).toBe("claude-opus-4-1");
   });
 
   it("requires command output types when top-level outputType is omitted", async () => {

@@ -86,6 +86,9 @@ Create a `.env` file at your workspace root. The variables you need depend on wh
 | Variable | When needed | Description |
 |---|---|---|
 | `OPENROUTER_API_KEY` | Rubric scoring with `provider: openrouter` | Your [OpenRouter](https://openrouter.ai) API key |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Rubric scoring with `provider: claude` when using token auth | Claude Code auth token (optional if the local `claude` CLI is already signed in) |
+| `ANTHROPIC_API_KEY` | Generation or rubric inference when using Claude directly | Anthropic API key |
+| `OPENAI_API_KEY` | Generation or rubric inference when using Codex | OpenAI API key |
 
 #### For generation (forwarded to containers)
 
@@ -147,6 +150,13 @@ Build a landing page for a fictional company called "Acme Corp". Include a hero,
 
 The `harness` field controls which coding agent runs inside the container (`claude` or `codex`). The markdown body is the prompt.
 
+If `harness` is omitted, the runner infers it in this order:
+
+1. `CLAUDE_CODE_OAUTH_TOKEN` from `process.env`, then workspace `.env` -> `claude`
+2. `ANTHROPIC_API_KEY` from `process.env`, then workspace `.env` -> `claude`
+3. `~/.code-container/configs/codex/auth.json` with a non-empty `tokens.access_token` -> `codex`
+4. `OPENAI_API_KEY` from `process.env`, then workspace `.env` -> `codex`
+
 You can also add multiple generation prompts at the workspace root using numbered files such as `GENERATION1.md`, `GENERATION2.md`, and `GENERATION3.md`. When multiple generation files are present, the runner executes all of them in filename order for the baseline and for every candidate, then aggregates scoring across the full set.
 
 ### `RUBRIC.md`
@@ -173,13 +183,15 @@ You are a design critic evaluating two HTML pages. Score them on visual identity
 
 | Field | Description |
 |---|---|
-| `provider` | `openrouter` or `codex` |
+| `provider` | `openrouter`, `codex`, or `claude` |
 | `model` | Model ID for scoring (e.g. `google/gemini-3-flash-preview`) |
 | `http_server` | Optional. `true` starts an ephemeral local server for the step directory; a number uses that exact port. Exposes `$STEP_ORIGIN` to rubric commands. |
 | `commands` | Array of evidence-collection steps |
 | `commands[].outputType` | `text` or `image` |
 | `commands[].command` | Shell command to produce evidence, or a built-in rubric helper such as `skill-autoresearch capture-screenshot` (optional — omit to read the file directly) |
 | `commands[].resultPath` | Path to the evidence file. `$STEP_PATH` is replaced at runtime. |
+
+If `provider` is omitted, the runner uses the same inference order as `GENERATION.md`, which resolves to `claude` or `codex`. `openrouter` still requires an explicit `provider: openrouter`.
 
 Rubric commands also receive `$RUBRIC_RUN_ID`, a unique identifier for that evidence-collection pass. If a CLI needs a process-local session or socket name, combine it with `$$`, for example `playwright-cli -s="$RUBRIC_RUN_ID-$$" ...`.
 ### `skills/<name>/SKILL.md`

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const scoringProviderSchema = z.enum(["openrouter", "codex"]);
+export const scoringProviderSchema = z.enum(["openrouter", "codex", "claude"]);
 export const evidenceOutputTypeSchema = z.enum(["text", "image"]);
 export const rubricHttpServerSchema = z.union([
   z.boolean(),

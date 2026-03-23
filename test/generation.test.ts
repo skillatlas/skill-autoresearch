@@ -8,6 +8,36 @@ import {
   loadGenerations
 } from "../src/core/generation.js";
 
+const INFERENCE_ENV_KEYS = [
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "HOME"
+] as const;
+
+async function withClearedInferenceEnv<T>(callback: () => Promise<T>): Promise<T> {
+  const previousEnv = Object.fromEntries(
+    INFERENCE_ENV_KEYS.map((key) => [key, process.env[key]])
+  ) as Record<(typeof INFERENCE_ENV_KEYS)[number], string | undefined>;
+
+  for (const key of INFERENCE_ENV_KEYS) {
+    delete process.env[key];
+  }
+
+  try {
+    return await callback();
+  } finally {
+    for (const key of INFERENCE_ENV_KEYS) {
+      const previousValue = previousEnv[key];
+      if (previousValue == null) {
+        delete process.env[key];
+      } else {
+        process.env[key] = previousValue;
+      }
+    }
+  }
+}
+
 describe("generation parsing", () => {
   it("requires an explicit harness and trims the prompt body", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "generation-"));
@@ -31,12 +61,33 @@ Generate the artifact set.
   });
 
   it("rejects generation files without a harness", async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "generation-"));
-    const generationPath = path.join(tempDir, "GENERATION.md");
+    await withClearedInferenceEnv(async () => {
+      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "generation-"));
+      const generationPath = path.join(tempDir, "GENERATION.md");
 
-    await fs.writeFile(generationPath, "Generate the artifact set.\n", "utf8");
+      await fs.writeFile(generationPath, "Generate the artifact set.\n", "utf8");
 
-    await expect(loadGeneration(generationPath)).rejects.toThrow();
+      await expect(loadGeneration(generationPath)).rejects.toThrow(
+        "Unable to infer a local agent."
+      );
+    });
+  });
+
+  it("infers the harness from the workspace .env when omitted", async () => {
+    await withClearedInferenceEnv(async () => {
+      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "generation-"));
+      const generationPath = path.join(tempDir, "GENERATION.md");
+
+      await fs.writeFile(
+        path.join(tempDir, ".env"),
+        "OPENAI_API_KEY=workspace-openai-key\n",
+        "utf8"
+      );
+      await fs.writeFile(generationPath, "Generate the artifact set.\n", "utf8");
+
+      const generation = await loadGeneration(generationPath);
+      expect(generation.harness).toBe("codex");
+    });
   });
 
   it("rejects generation files with an empty body", async () => {

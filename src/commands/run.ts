@@ -7,6 +7,7 @@ import { Logger } from "../core/logger.js";
 import { Orchestrator, RunOptions } from "../core/orchestrator.js";
 import { loadRubric } from "../core/rubric.js";
 import {
+  ClaudeVoteJudge,
   CodexVoteJudge,
   loadWorkspaceEnv,
   OpenRouterVoteJudge,
@@ -143,7 +144,8 @@ export async function runCommand(
       logger,
       {
         openrouter: new OpenRouterVoteJudge(logger, workspaceRoot),
-        codex: new CodexVoteJudge(workspaceRoot, logger, options.verbose)
+        codex: new CodexVoteJudge(workspaceRoot, logger, options.verbose),
+        claude: new ClaudeVoteJudge(workspaceRoot, logger, options.verbose)
       },
       options.verbose
     ),

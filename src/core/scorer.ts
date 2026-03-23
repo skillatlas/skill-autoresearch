@@ -358,7 +358,15 @@ function createRubricRunId(): string {
 }
 
 const SCREENSHOT_SETTLE_SCRIPT = String.raw`async (page) => {
-  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const waitForNextPaint = () =>
+    page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => resolve(undefined));
+          });
+        })
+    );
 
   const waitForAnimationsToSettle = async (timeoutMs) => {
     const startedAt = Date.now();
@@ -380,7 +388,7 @@ const SCREENSHOT_SETTLE_SCRIPT = String.raw`async (page) => {
         return;
       }
 
-      await sleep(100);
+      await page.waitForTimeout(100);
     }
   };
 
@@ -394,7 +402,14 @@ const SCREENSHOT_SETTLE_SCRIPT = String.raw`async (page) => {
     })
     .catch(() => undefined);
 
-  await waitForAnimationsToSettle(1500);
+  await page
+    .evaluate(() => {
+      document.documentElement.style.setProperty("scroll-behavior", "auto", "important");
+      document.body?.style?.setProperty("scroll-behavior", "auto", "important");
+    })
+    .catch(() => undefined);
+  await waitForNextPaint().catch(() => undefined);
+  await waitForAnimationsToSettle(2500);
 
   const pageMetrics = await page.evaluate(() => ({
     viewportHeight: window.innerHeight,
@@ -410,7 +425,8 @@ const SCREENSHOT_SETTLE_SCRIPT = String.raw`async (page) => {
 
   while (true) {
     await page.evaluate((offset) => window.scrollTo(0, offset), scrollTop);
-    await sleep(250);
+    await waitForNextPaint().catch(() => undefined);
+    await page.waitForTimeout(150);
     await waitForAnimationsToSettle(1000);
 
     const nextScrollTop = await page.evaluate(
@@ -438,8 +454,23 @@ const SCREENSHOT_SETTLE_SCRIPT = String.raw`async (page) => {
   }
 
   await page.evaluate(() => window.scrollTo(0, 0));
-  await sleep(250);
-  await waitForAnimationsToSettle(1500);
+  await waitForNextPaint().catch(() => undefined);
+  await page.waitForTimeout(150);
+  await page
+    .addStyleTag({
+      content:
+        "html, body { scroll-behavior: auto !important; } " +
+        "*, *::before, *::after { " +
+        "animation-delay: 0s !important; " +
+        "animation-duration: 0.01ms !important; " +
+        "animation-iteration-count: 1 !important; " +
+        "transition-delay: 0s !important; " +
+        "transition-duration: 0.01ms !important; " +
+        "}"
+    })
+    .catch(() => undefined);
+  await waitForNextPaint().catch(() => undefined);
+  await page.waitForTimeout(50);
 }`;
 
 export function summarizeVotes(
@@ -509,6 +540,104 @@ export interface ScoringService {
     incumbentEvidence: EvidenceItem[];
     candidateEvidence: EvidenceItem[];
   }): Promise<ScoreVote>;
+}
+
+function collectImagePaths(
+  incumbentEvidence: EvidenceItem[],
+  candidateEvidence: EvidenceItem[]
+): string[] {
+  return [...incumbentEvidence, ...candidateEvidence].flatMap((item) =>
+    item.outputType === "image" ? [item.path] : []
+  );
+}
+
+function formatCliJudgeEvidenceBlock(
+  label: string,
+  evidence: EvidenceItem[],
+  startingImageIndex: number,
+  imageMode: "attachment" | "path"
+): { lines: string[]; nextImageIndex: number } {
+  const lines = [`${label} evidence:`];
+  let nextImageIndex = startingImageIndex;
+
+  for (const [index, item] of evidence.entries()) {
+    if (item.outputType === "text") {
+      lines.push(`Evidence ${index + 1} (${item.label}) [text]:`, item.content, "");
+      continue;
+    }
+
+    if (imageMode === "attachment") {
+      lines.push(
+        `Evidence ${index + 1} (${item.label}) [image attachment ${nextImageIndex}]: ${path.basename(item.path)}`,
+        ""
+      );
+      nextImageIndex += 1;
+      continue;
+    }
+
+    lines.push(
+      `Evidence ${index + 1} (${item.label}) [image path]: ${item.path}`,
+      ""
+    );
+  }
+
+  return { lines, nextImageIndex };
+}
+
+function buildCliJudgePrompt(input: {
+  rubricPrompt: string;
+  incumbentEvidence: EvidenceItem[];
+  candidateEvidence: EvidenceItem[];
+}, imageMode: "attachment" | "path"): string {
+  const sections = [
+    "You are scoring two candidates against a rubric.",
+    'Return winner "A" when Candidate A is better, or "B" when Candidate B is better.',
+    "Set confidence between 0 and 1, and keep the rationale concise.",
+    "",
+    "Rubric:",
+    input.rubricPrompt,
+    ""
+  ];
+
+  let nextImageIndex = 1;
+  const candidateAEvidence = formatCliJudgeEvidenceBlock(
+    "Candidate A",
+    input.incumbentEvidence,
+    nextImageIndex,
+    imageMode
+  );
+  nextImageIndex = candidateAEvidence.nextImageIndex;
+
+  const candidateBEvidence = formatCliJudgeEvidenceBlock(
+    "Candidate B",
+    input.candidateEvidence,
+    nextImageIndex,
+    imageMode
+  );
+
+  sections.push(...candidateAEvidence.lines, ...candidateBEvidence.lines);
+
+  const hasImages =
+    input.incumbentEvidence.some((item) => item.outputType === "image") ||
+    input.candidateEvidence.some((item) => item.outputType === "image");
+  if (hasImages) {
+    sections.push(
+      imageMode === "attachment"
+        ? "Image attachments are provided in the numbered order above."
+        : "Use the image paths above as direct image inputs when judging the candidates.",
+      ""
+    );
+  }
+
+  sections.push(
+    hasImages
+      ? imageMode === "attachment"
+        ? "Judge only from the evidence above and the attached image contents."
+        : "Judge only from the evidence above and the image files referenced by path."
+      : "Judge only from the evidence above."
+  );
+
+  return sections.join("\n");
 }
 
 export class OpenRouterVoteJudge implements VoteJudge {
@@ -717,10 +846,7 @@ export class CodexVoteJudge implements VoteJudge {
       this.runtimeDir,
       `vote-${Date.now()}-${Math.random().toString(16).slice(2)}.json`
     );
-    const imagePaths = this.collectImagePaths(
-      input.incumbentEvidence,
-      input.candidateEvidence
-    );
+    const imagePaths = collectImagePaths(input.incumbentEvidence, input.candidateEvidence);
     const prompt = this.buildPrompt(input);
     const args = [
       "exec",
@@ -779,84 +905,12 @@ export class CodexVoteJudge implements VoteJudge {
     await fs.writeJson(this.schemaPath, scoreVoteJsonSchema, { spaces: 2 });
   }
 
-  private collectImagePaths(
-    incumbentEvidence: EvidenceItem[],
-    candidateEvidence: EvidenceItem[]
-  ): string[] {
-    return [...incumbentEvidence, ...candidateEvidence].flatMap((item) =>
-      item.outputType === "image" ? [item.path] : []
-    );
-  }
-
   private buildPrompt(input: {
     rubricPrompt: string;
     incumbentEvidence: EvidenceItem[];
     candidateEvidence: EvidenceItem[];
   }): string {
-    const sections = [
-      "You are scoring two candidates against a rubric.",
-      'Return winner "A" when Candidate A is better, or "B" when Candidate B is better.',
-      "Set confidence between 0 and 1, and keep the rationale concise.",
-      "",
-      "Rubric:",
-      input.rubricPrompt,
-      ""
-    ];
-
-    let nextImageIndex = 1;
-    const candidateAEvidence = this.formatEvidenceBlock(
-      "Candidate A",
-      input.incumbentEvidence,
-      nextImageIndex
-    );
-    nextImageIndex = candidateAEvidence.nextImageIndex;
-
-    const candidateBEvidence = this.formatEvidenceBlock(
-      "Candidate B",
-      input.candidateEvidence,
-      nextImageIndex
-    );
-
-    sections.push(...candidateAEvidence.lines, ...candidateBEvidence.lines);
-
-    const hasImages = candidateBEvidence.nextImageIndex > 1;
-    if (hasImages) {
-      sections.push(
-        "Image attachments are provided in the numbered order above.",
-        ""
-      );
-    }
-
-    sections.push(
-      hasImages
-        ? "Judge only from the evidence above and the attached image contents."
-        : "Judge only from the evidence above."
-    );
-    return sections.join("\n");
-  }
-
-  private formatEvidenceBlock(
-    label: string,
-    evidence: EvidenceItem[],
-    startingImageIndex: number
-  ): { lines: string[]; nextImageIndex: number } {
-    const lines = [`${label} evidence:`];
-    let nextImageIndex = startingImageIndex;
-
-    for (const [index, item] of evidence.entries()) {
-      if (item.outputType === "text") {
-        lines.push(`Evidence ${index + 1} (${item.label}) [text]:`, item.content, "");
-        continue;
-      }
-
-      lines.push(
-        `Evidence ${index + 1} (${item.label}) [image attachment ${nextImageIndex}]: ${path.basename(item.path)}`,
-        ""
-      );
-      nextImageIndex += 1;
-    }
-
-    return { lines, nextImageIndex };
+    return buildCliJudgePrompt(input, "attachment");
   }
 
   private logDebugInput(
@@ -886,6 +940,110 @@ export class CodexVoteJudge implements VoteJudge {
 
     this.logger.info(
       `[score-debug] Codex scoring input:\n${JSON.stringify(payload, null, 2)}`,
+      payload,
+      "score-debug"
+    );
+  }
+}
+
+export class ClaudeVoteJudge implements VoteJudge {
+  public constructor(
+    private readonly workspaceRoot: string,
+    private readonly logger: Logger,
+    private readonly verbose: boolean
+  ) {}
+
+  public async generateVote(input: {
+    modelId: string;
+    rubricPrompt: string;
+    incumbentEvidence: EvidenceItem[];
+    candidateEvidence: EvidenceItem[];
+  }): Promise<ScoreVote> {
+    const imagePaths = collectImagePaths(input.incumbentEvidence, input.candidateEvidence);
+    const prompt = this.buildPrompt(input);
+    const args = [
+      "-p",
+      "--output-format",
+      "json",
+      "--no-session-persistence",
+      "--model",
+      input.modelId,
+      "--json-schema",
+      JSON.stringify(scoreVoteJsonSchema),
+      prompt
+    ];
+    this.logDebugInput(input, prompt, imagePaths, args);
+
+    if (this.verbose) {
+      this.logger.debug(`claude ${args.join(" ")}`);
+    }
+
+    const result = await execa("claude", args, {
+      cwd: this.workspaceRoot,
+      all: true,
+      reject: false
+    });
+
+    if (this.verbose && result.all?.trim()) {
+      this.logger.debug(result.all);
+    }
+
+    if (result.exitCode !== 0) {
+      throw new Error(
+        `Claude scoring failed for model ${input.modelId} with exit code ${result.exitCode}.`
+      );
+    }
+
+    const rawOutput = result.stdout.trim();
+    if (rawOutput.length === 0) {
+      throw new Error("Claude scoring returned empty output.");
+    }
+
+    const parsedOutput = JSON.parse(rawOutput) as {
+      structured_output?: unknown;
+    };
+    if (parsedOutput.structured_output === undefined) {
+      throw new Error("Claude scoring did not return structured_output.");
+    }
+
+    return scoreVoteSchema.parse(parsedOutput.structured_output);
+  }
+
+  private buildPrompt(input: {
+    rubricPrompt: string;
+    incumbentEvidence: EvidenceItem[];
+    candidateEvidence: EvidenceItem[];
+  }): string {
+    return buildCliJudgePrompt(input, "path");
+  }
+
+  private logDebugInput(
+    input: {
+      modelId: string;
+      rubricPrompt: string;
+      incumbentEvidence: EvidenceItem[];
+      candidateEvidence: EvidenceItem[];
+    },
+    prompt: string,
+    imagePaths: string[],
+    args: string[]
+  ): void {
+    if (!isDebugScoreEnabled()) {
+      return;
+    }
+
+    const payload = {
+      provider: "claude" as const,
+      modelId: input.modelId,
+      command: ["claude", ...args],
+      prompt,
+      imagePaths,
+      incumbentEvidence: serializeEvidenceForDebug(input.incumbentEvidence),
+      candidateEvidence: serializeEvidenceForDebug(input.candidateEvidence)
+    };
+
+    this.logger.info(
+      `[score-debug] Claude scoring input:\n${JSON.stringify(payload, null, 2)}`,
       payload,
       "score-debug"
     );
