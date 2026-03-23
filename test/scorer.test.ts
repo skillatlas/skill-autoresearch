@@ -901,7 +901,8 @@ if (command === "close") {
     process.env.DEBUG_SCORE = "1";
 
     try {
-      (new CodexVoteJudge(workspaceRoot, logger, false) as any).logDebugInput(
+      const judge = new CodexVoteJudge(workspaceRoot, logger, false) as any;
+      const payload = judge.buildDebugRequestPayload(
         {
           modelId: "gpt-5",
           rubricPrompt: "Judge the candidates.",
@@ -926,6 +927,7 @@ if (command === "close") {
         [path.join(workspaceRoot, "b.png")],
         ["exec", "--image", path.join(workspaceRoot, "b.png"), "Prompt text"]
       );
+      judge.logDebugInput(payload);
 
       expect(infoSpy).toHaveBeenCalledTimes(1);
       const [message] = infoSpy.mock.calls[0];
@@ -939,6 +941,91 @@ if (command === "close") {
         process.env.DEBUG_SCORE = previousDebugScore;
       }
       infoSpy.mockRestore();
+    }
+  });
+
+  it("writes one Codex scoring log file per call when DEBUG_LOG_SCORING=1", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "codex-score-log-"));
+    const fakeBinDir = path.join(workspaceRoot, "bin");
+    await fs.ensureDir(fakeBinDir);
+    await fs.writeFile(
+      path.join(fakeBinDir, "codex"),
+      `#!/usr/bin/env node
+import fs from "node:fs";
+
+const args = process.argv.slice(2);
+const outputPathIndex = args.indexOf("-o");
+if (outputPathIndex === -1 || !args[outputPathIndex + 1]) {
+  process.exit(2);
+}
+
+fs.writeFileSync(
+  args[outputPathIndex + 1],
+  JSON.stringify({
+    winner: "B",
+    confidence: 0.9,
+    rationale: "Candidate B is stronger."
+  })
+);
+`,
+      "utf8"
+    );
+    await fs.chmod(path.join(fakeBinDir, "codex"), 0o755);
+
+    const previousPath = process.env.PATH;
+    const previousDebugLogScoring = process.env.DEBUG_LOG_SCORING;
+    process.env.PATH = `${fakeBinDir}${path.delimiter}${previousPath ?? ""}`;
+    process.env.DEBUG_LOG_SCORING = "1";
+
+    try {
+      const vote = await new CodexVoteJudge(
+        workspaceRoot,
+        new Logger(false),
+        false
+      ).generateVote({
+        modelId: "gpt-5",
+        rubricPrompt: "Pick the stronger candidate.",
+        incumbentEvidence: [
+          {
+            outputType: "text",
+            label: "markup",
+            content: "<main>A</main>"
+          }
+        ],
+        candidateEvidence: [
+          {
+            outputType: "image",
+            label: "hero",
+            path: path.join(workspaceRoot, "b.png"),
+            mimeType: "image/png",
+            bytes: Buffer.from("b")
+          }
+        ]
+      });
+
+      expect(vote).toEqual({
+        winner: "B",
+        confidence: 0.9,
+        rationale: "Candidate B is stronger."
+      });
+
+      const logDir = path.join(workspaceRoot, "log");
+      const files = await fs.readdir(logDir);
+      expect(files).toHaveLength(1);
+
+      const logPayload = await fs.readJson(path.join(logDir, files[0]!));
+      expect(logPayload.request.provider).toBe("codex");
+      expect(logPayload.request.prompt).toContain("Pick the stronger candidate.");
+      expect(logPayload.request.prompt).toContain("Evidence 1 (markup) [text]:");
+      expect(logPayload.response.rawOutput).toContain('"winner":"B"');
+      expect(logPayload.response.structuredOutput).toEqual(vote);
+    } finally {
+      process.env.PATH = previousPath;
+      if (previousDebugLogScoring === undefined) {
+        delete process.env.DEBUG_LOG_SCORING;
+      } else {
+        process.env.DEBUG_LOG_SCORING = previousDebugLogScoring;
+      }
     }
   });
 
@@ -1076,7 +1163,8 @@ process.stdout.write(JSON.stringify({
     process.env.DEBUG_SCORE = "1";
 
     try {
-      (new ClaudeVoteJudge(workspaceRoot, logger, false) as any).logDebugInput(
+      const judge = new ClaudeVoteJudge(workspaceRoot, logger, false) as any;
+      const payload = judge.buildDebugRequestPayload(
         {
           modelId: "claude-opus-4-1",
           rubricPrompt: "Judge the candidates.",
@@ -1101,6 +1189,7 @@ process.stdout.write(JSON.stringify({
         [path.join(workspaceRoot, "b.png")],
         ["-p", "--output-format", "json", "Prompt text"]
       );
+      judge.logDebugInput(payload);
 
       expect(infoSpy).toHaveBeenCalledTimes(1);
       const [message] = infoSpy.mock.calls[0];
@@ -1114,6 +1203,82 @@ process.stdout.write(JSON.stringify({
         process.env.DEBUG_SCORE = previousDebugScore;
       }
       infoSpy.mockRestore();
+    }
+  });
+
+  it("writes one Claude scoring log file per call when DEBUG_LOG_SCORING=1", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "claude-score-log-"));
+    const fakeBinDir = path.join(workspaceRoot, "bin");
+    await fs.ensureDir(fakeBinDir);
+    await fs.writeFile(
+      path.join(fakeBinDir, "claude"),
+      `#!/usr/bin/env node
+process.stdout.write(JSON.stringify({
+  structured_output: {
+    winner: "B",
+    confidence: 0.75,
+    rationale: "Candidate B is stronger."
+  }
+}));
+`,
+      "utf8"
+    );
+    await fs.chmod(path.join(fakeBinDir, "claude"), 0o755);
+
+    const previousPath = process.env.PATH;
+    const previousDebugLogScoring = process.env.DEBUG_LOG_SCORING;
+    process.env.PATH = `${fakeBinDir}${path.delimiter}${previousPath ?? ""}`;
+    process.env.DEBUG_LOG_SCORING = "1";
+
+    try {
+      const vote = await new ClaudeVoteJudge(
+        workspaceRoot,
+        new Logger(false),
+        false
+      ).generateVote({
+        modelId: "claude-opus-4-1",
+        rubricPrompt: "Pick the stronger candidate.",
+        incumbentEvidence: [
+          {
+            outputType: "text",
+            label: "markup",
+            content: "<main>A</main>"
+          }
+        ],
+        candidateEvidence: [
+          {
+            outputType: "image",
+            label: "hero",
+            path: path.join(workspaceRoot, "b.png"),
+            mimeType: "image/png",
+            bytes: Buffer.from("b")
+          }
+        ]
+      });
+
+      expect(vote).toEqual({
+        winner: "B",
+        confidence: 0.75,
+        rationale: "Candidate B is stronger."
+      });
+
+      const logDir = path.join(workspaceRoot, "log");
+      const files = await fs.readdir(logDir);
+      expect(files).toHaveLength(1);
+
+      const logPayload = await fs.readJson(path.join(logDir, files[0]!));
+      expect(logPayload.request.provider).toBe("claude");
+      expect(logPayload.request.prompt).toContain("Pick the stronger candidate.");
+      expect(logPayload.request.prompt).toContain("Evidence 1 (markup) [text]:");
+      expect(logPayload.response.rawOutput).toContain('"structured_output"');
+      expect(logPayload.response.structuredOutput).toEqual(vote);
+    } finally {
+      process.env.PATH = previousPath;
+      if (previousDebugLogScoring === undefined) {
+        delete process.env.DEBUG_LOG_SCORING;
+      } else {
+        process.env.DEBUG_LOG_SCORING = previousDebugLogScoring;
+      }
     }
   });
 });

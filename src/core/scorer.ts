@@ -154,6 +154,56 @@ function serializeOpenRouterError(error: unknown) {
   };
 }
 
+function serializeScoreDebugError(error: unknown) {
+  if (!(error instanceof Error)) {
+    return { message: String(error) };
+  }
+
+  return {
+    name: error.name,
+    message: error.message,
+    stack: error.stack,
+    cause: error.cause,
+    ...(typeof error === "object" && error
+      ? {
+          stdout: "stdout" in error ? (error as { stdout?: unknown }).stdout : undefined,
+          stderr: "stderr" in error ? (error as { stderr?: unknown }).stderr : undefined,
+          all: "all" in error ? (error as { all?: unknown }).all : undefined,
+          text: "text" in error ? (error as { text?: unknown }).text : undefined,
+          response:
+            "response" in error ? (error as { response?: unknown }).response : undefined,
+          usage: "usage" in error ? (error as { usage?: unknown }).usage : undefined
+        }
+      : {})
+  };
+}
+
+async function writeScoreDebugLogFile(input: {
+  workspaceRoot: string;
+  logger: Logger;
+  provider: ScoringProvider;
+  payload: unknown;
+}): Promise<void> {
+  if (!isDebugLogScoringEnabled()) {
+    return;
+  }
+
+  const logDir = path.join(input.workspaceRoot, "log");
+  const filename = `${input.provider}-score-${Date.now()}-${randomUUID()}.json`;
+
+  try {
+    await fs.ensureDir(logDir);
+    await fs.writeJson(path.join(logDir, filename), input.payload, { spaces: 2 });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    input.logger.warn(
+      `Failed to write ${input.provider} scoring debug log to ${path.join(logDir, filename)}: ${message}`,
+      { error },
+      "score-debug-log-write-failed"
+    );
+  }
+}
+
 function tokenizeShellCommand(command: string): string[] | undefined {
   const tokens: string[] = [];
   let current = "";
@@ -799,24 +849,12 @@ export class OpenRouterVoteJudge implements VoteJudge {
   }
 
   private async writeDebugLogFile(payload: unknown): Promise<void> {
-    if (!isDebugLogScoringEnabled()) {
-      return;
-    }
-
-    const logDir = path.join(this.workspaceRoot, "log");
-    const filename = `openrouter-score-${Date.now()}-${randomUUID()}.json`;
-
-    try {
-      await fs.ensureDir(logDir);
-      await fs.writeJson(path.join(logDir, filename), payload, { spaces: 2 });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.warn(
-        `Failed to write OpenRouter scoring debug log to ${path.join(logDir, filename)}: ${message}`,
-        { error },
-        "score-debug-log-write-failed"
-      );
-    }
+    await writeScoreDebugLogFile({
+      workspaceRoot: this.workspaceRoot,
+      logger: this.logger,
+      provider: "openrouter",
+      payload
+    });
   }
 }
 
@@ -862,7 +900,9 @@ export class CodexVoteJudge implements VoteJudge {
       ...imagePaths.flatMap((imagePath) => ["--image", imagePath]),
       prompt
     ];
-    this.logDebugInput(input, prompt, imagePaths, args);
+    const requestPayload = this.buildDebugRequestPayload(input, prompt, imagePaths, args);
+    this.logDebugInput(requestPayload);
+    let rawOutput = "";
 
     if (this.verbose) {
       this.logger.debug(`codex ${args.join(" ")}`);
@@ -885,13 +925,34 @@ export class CodexVoteJudge implements VoteJudge {
         );
       }
 
-      const rawOutput = (await fs.readFile(outputPath, "utf8")).trim();
+      rawOutput = (await fs.readFile(outputPath, "utf8")).trim();
       if (rawOutput.length === 0) {
         throw new Error("Codex scoring returned empty output.");
       }
 
       const parsedOutput = JSON.parse(rawOutput) as unknown;
-      return scoreVoteSchema.parse(parsedOutput);
+      const vote = scoreVoteSchema.parse(parsedOutput);
+      await this.writeDebugLogFile({
+        provider: "codex",
+        loggedAt: new Date().toISOString(),
+        request: requestPayload,
+        response: {
+          rawOutput,
+          structuredOutput: vote
+        }
+      });
+      return vote;
+    } catch (error) {
+      await this.writeDebugLogFile({
+        provider: "codex",
+        loggedAt: new Date().toISOString(),
+        request: requestPayload,
+        error: {
+          ...serializeScoreDebugError(error),
+          rawOutput: rawOutput.length > 0 ? rawOutput : undefined
+        }
+      });
+      throw error;
     } finally {
       await fs.remove(outputPath);
     }
@@ -913,7 +974,7 @@ export class CodexVoteJudge implements VoteJudge {
     return buildCliJudgePrompt(input, "attachment");
   }
 
-  private logDebugInput(
+  private buildDebugRequestPayload(
     input: {
       modelId: string;
       rubricPrompt: string;
@@ -923,12 +984,8 @@ export class CodexVoteJudge implements VoteJudge {
     prompt: string,
     imagePaths: string[],
     args: string[]
-  ): void {
-    if (!isDebugScoreEnabled()) {
-      return;
-    }
-
-    const payload = {
+  ) {
+    return {
       provider: "codex" as const,
       modelId: input.modelId,
       command: ["codex", ...args],
@@ -937,12 +994,35 @@ export class CodexVoteJudge implements VoteJudge {
       incumbentEvidence: serializeEvidenceForDebug(input.incumbentEvidence),
       candidateEvidence: serializeEvidenceForDebug(input.candidateEvidence)
     };
+  }
+
+  private logDebugInput(payload: {
+    provider: "codex";
+    modelId: string;
+    command: string[];
+    prompt: string;
+    imagePaths: string[];
+    incumbentEvidence: ReturnType<typeof serializeEvidenceForDebug>;
+    candidateEvidence: ReturnType<typeof serializeEvidenceForDebug>;
+  }): void {
+    if (!isDebugScoreEnabled()) {
+      return;
+    }
 
     this.logger.info(
       `[score-debug] Codex scoring input:\n${JSON.stringify(payload, null, 2)}`,
       payload,
       "score-debug"
     );
+  }
+
+  private async writeDebugLogFile(payload: unknown): Promise<void> {
+    await writeScoreDebugLogFile({
+      workspaceRoot: this.workspaceRoot,
+      logger: this.logger,
+      provider: "codex",
+      payload
+    });
   }
 }
 
@@ -972,41 +1052,66 @@ export class ClaudeVoteJudge implements VoteJudge {
       JSON.stringify(scoreVoteJsonSchema),
       prompt
     ];
-    this.logDebugInput(input, prompt, imagePaths, args);
+    const requestPayload = this.buildDebugRequestPayload(input, prompt, imagePaths, args);
+    this.logDebugInput(requestPayload);
+    let rawOutput = "";
 
     if (this.verbose) {
       this.logger.debug(`claude ${args.join(" ")}`);
     }
 
-    const result = await execa("claude", args, {
-      cwd: this.workspaceRoot,
-      all: true,
-      reject: false
-    });
+    try {
+      const result = await execa("claude", args, {
+        cwd: this.workspaceRoot,
+        all: true,
+        reject: false
+      });
 
-    if (this.verbose && result.all?.trim()) {
-      this.logger.debug(result.all);
+      if (this.verbose && result.all?.trim()) {
+        this.logger.debug(result.all);
+      }
+
+      if (result.exitCode !== 0) {
+        throw new Error(
+          `Claude scoring failed for model ${input.modelId} with exit code ${result.exitCode}.`
+        );
+      }
+
+      rawOutput = result.stdout.trim();
+      if (rawOutput.length === 0) {
+        throw new Error("Claude scoring returned empty output.");
+      }
+
+      const parsedOutput = JSON.parse(rawOutput) as {
+        structured_output?: unknown;
+      };
+      if (parsedOutput.structured_output === undefined) {
+        throw new Error("Claude scoring did not return structured_output.");
+      }
+
+      const vote = scoreVoteSchema.parse(parsedOutput.structured_output);
+      await this.writeDebugLogFile({
+        provider: "claude",
+        loggedAt: new Date().toISOString(),
+        request: requestPayload,
+        response: {
+          rawOutput,
+          structuredOutput: vote
+        }
+      });
+      return vote;
+    } catch (error) {
+      await this.writeDebugLogFile({
+        provider: "claude",
+        loggedAt: new Date().toISOString(),
+        request: requestPayload,
+        error: {
+          ...serializeScoreDebugError(error),
+          rawOutput: rawOutput.length > 0 ? rawOutput : undefined
+        }
+      });
+      throw error;
     }
-
-    if (result.exitCode !== 0) {
-      throw new Error(
-        `Claude scoring failed for model ${input.modelId} with exit code ${result.exitCode}.`
-      );
-    }
-
-    const rawOutput = result.stdout.trim();
-    if (rawOutput.length === 0) {
-      throw new Error("Claude scoring returned empty output.");
-    }
-
-    const parsedOutput = JSON.parse(rawOutput) as {
-      structured_output?: unknown;
-    };
-    if (parsedOutput.structured_output === undefined) {
-      throw new Error("Claude scoring did not return structured_output.");
-    }
-
-    return scoreVoteSchema.parse(parsedOutput.structured_output);
   }
 
   private buildPrompt(input: {
@@ -1017,7 +1122,7 @@ export class ClaudeVoteJudge implements VoteJudge {
     return buildCliJudgePrompt(input, "path");
   }
 
-  private logDebugInput(
+  private buildDebugRequestPayload(
     input: {
       modelId: string;
       rubricPrompt: string;
@@ -1027,12 +1132,8 @@ export class ClaudeVoteJudge implements VoteJudge {
     prompt: string,
     imagePaths: string[],
     args: string[]
-  ): void {
-    if (!isDebugScoreEnabled()) {
-      return;
-    }
-
-    const payload = {
+  ) {
+    return {
       provider: "claude" as const,
       modelId: input.modelId,
       command: ["claude", ...args],
@@ -1041,12 +1142,35 @@ export class ClaudeVoteJudge implements VoteJudge {
       incumbentEvidence: serializeEvidenceForDebug(input.incumbentEvidence),
       candidateEvidence: serializeEvidenceForDebug(input.candidateEvidence)
     };
+  }
+
+  private logDebugInput(payload: {
+    provider: "claude";
+    modelId: string;
+    command: string[];
+    prompt: string;
+    imagePaths: string[];
+    incumbentEvidence: ReturnType<typeof serializeEvidenceForDebug>;
+    candidateEvidence: ReturnType<typeof serializeEvidenceForDebug>;
+  }): void {
+    if (!isDebugScoreEnabled()) {
+      return;
+    }
 
     this.logger.info(
       `[score-debug] Claude scoring input:\n${JSON.stringify(payload, null, 2)}`,
       payload,
       "score-debug"
     );
+  }
+
+  private async writeDebugLogFile(payload: unknown): Promise<void> {
+    await writeScoreDebugLogFile({
+      workspaceRoot: this.workspaceRoot,
+      logger: this.logger,
+      provider: "claude",
+      payload
+    });
   }
 }
 
