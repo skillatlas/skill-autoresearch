@@ -67,7 +67,7 @@ This creates starter versions of every required file without overwriting anythin
 ```
 my-workspace/
 ├── .env                 # API keys (see below)
-├── INSTRUCTIONS.md      # How to improve the skill each iteration
+├── INSTRUCTIONS.md      # Mutation prompt + provider/model for editing skills
 ├── GENERATION.md        # Prompt + provider/model for generating artifacts
 ├── RUBRIC.md            # Scoring criteria + model config
 └── skills/
@@ -79,7 +79,7 @@ Each file is described in detail below.
 
 ### 3. Configure environment variables
 
-Create a `.env` file at your workspace root. The variables you need depend on which generation provider and scoring provider you're using.
+Create a `.env` file at your workspace root. The variables you need depend on which mutation/generation providers and scoring provider you're using.
 
 #### For scoring (required in rubric mode)
 
@@ -90,9 +90,9 @@ Create a `.env` file at your workspace root. The variables you need depend on wh
 | `ANTHROPIC_API_KEY`       | Generation or rubric inference when using Claude in API key mode | Anthropic API key                                |
 | `OPENAI_API_KEY`          | Generation or rubric inference when using Codex in API key mode  | OpenAI API key                                   |
 
-#### For generation (forwarded to containers)
+#### For container runs (generation and mutation)
 
-The generation provider runs inside an isolated container. These variables are forwarded from your environment automatically — you can set them in `.env` or export them in your shell.
+Generation and mutation providers run inside isolated containers. These variables are forwarded from your environment automatically — you can set them in `.env` or export them in your shell.
 
 | Variable                  | Provider | Description                       |
 | ------------------------- | -------- | --------------------------------- |
@@ -107,7 +107,7 @@ The generation provider runs inside an isolated container. These variables are f
 | Variable              | Effect                                              |
 | --------------------- | --------------------------------------------------- |
 | `DEBUG_GENERATION=1`  | Stream verbose output from Claude during generation |
-| `DEBUG_SCORE=1`       | Log scoring inputs to JSONL                         |
+| `DEBUG_SCORE=1`       | Log scoring inputs and live Codex JSON events       |
 | `DEBUG_LOG_SCORING=1` | Write one JSON file per scoring call to `./log/`    |
 
 **Example `.env`:**
@@ -134,7 +134,22 @@ npx skill-autoresearch run --dry-run
 
 ### `INSTRUCTIONS.md`
 
-Tells the LLM how to improve the skill on each iteration. This is the prompt used during the **mutate** phase. It should describe what kind of edits are acceptable, what to avoid, and any constraints (e.g. max file length, no specific font names).
+Tells the LLM how to improve the skill on each iteration. This is the prompt used during the **mutate** phase. Uses YAML frontmatter:
+
+```markdown
+---
+provider: claude # or "codex"
+model: claude-opus-4-1 # optional
+---
+
+Review the current SKILL.md and make one targeted improvement.
+```
+
+The `provider` field controls which coding agent performs the mutation (`claude` or `codex`). `model` is optional; if omitted, the provider default is used. The markdown body is the mutation prompt and should describe what edits are allowed, what to avoid, and any constraints.
+
+If `provider` is omitted, the runner uses the same inference order as `GENERATION.md`, which resolves to `claude` or `codex`.
+
+`skill-autoresearch run --provider <id>` overrides this frontmatter value.
 
 ### `GENERATION.md`
 
@@ -157,6 +172,8 @@ If `provider` is omitted, the runner infers it in this order:
 2. `ANTHROPIC_API_KEY` from `process.env`, then workspace `.env` -> `claude`
 3. `~/.code-container/configs/codex/auth.json` with a non-empty `tokens.access_token` -> `codex`
 4. `OPENAI_API_KEY` from `process.env`, then workspace `.env` -> `codex`
+
+`skill-autoresearch run --provider <id>` overrides the frontmatter provider for every generation file.
 
 You can also add multiple generation prompts at the workspace root using numbered files such as `GENERATION1.md`, `GENERATION2.md`, and `GENERATION3.md`. When multiple generation files are present, the runner executes all of them in filename order for the baseline and for every candidate, then aggregates scoring across the full set.
 
@@ -194,7 +211,11 @@ You are a design critic evaluating two HTML pages. Score them on visual identity
 
 If `provider` is omitted, the runner uses the same inference order as `GENERATION.md`, which resolves to `claude` or `codex`. `openrouter` still requires an explicit `provider: openrouter`.
 
+`skill-autoresearch run --provider <id>` overrides the rubric provider with `claude` or `codex`.
+
 Rubric commands also receive `$RUBRIC_RUN_ID`, a unique identifier for that evidence-collection pass. If a CLI needs a process-local session or socket name, combine it with `$$`, for example `playwright-cli -s="$RUBRIC_RUN_ID-$$" ...`.
+
+In rubric mode, the scorer also injects a text diff of the skill directory from Candidate A to Candidate B by default. Put any instructions for how to use that comparison evidence in the markdown body of `RUBRIC.md`. Use `--omit-skill-diff` if you want scoring to rely only on the artifact evidence collected by the rubric commands.
 
 ### `skills/<name>/SKILL.md`
 
@@ -216,7 +237,9 @@ Scaffold a new workspace with sample `INSTRUCTIONS.md`, `GENERATION.md`, `RUBRIC
 | `--max-steps [n]`       | `20`                      | Maximum iterations. Pass without a value, or use `0`, to disable the limit. |
 | `--stasis-steps <n>`    | —                         | Stop after this many consecutive rejections                                 |
 | `--resume`              | `false`                   | Resume from saved state                                                     |
+| `--provider <id>`       | —                         | Override `provider` in `INSTRUCTIONS.md`, all `GENERATION*.md`, and `RUBRIC.md` with `claude` or `codex` |
 | `--model <id>`          | —                         | Override the rubric model                                                   |
+| `--omit-skill-diff`     | `false`                   | Disable the default rubric-mode skill diff comparison evidence              |
 | `--scoring-mode <mode>` | `rubric`                  | `rubric` (LLM judge) or `human` (local review UI)                           |
 | `--dry-run`             | `false`                   | Validate inputs, print plan, don't execute                                  |
 | `--verbose`             | `false`                   | Show container command output                                               |

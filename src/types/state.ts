@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { generationProviderSchema } from "./generation.js";
+
 export const runStatusSchema = z.enum([
   "idle",
   "running",
@@ -49,6 +51,14 @@ export const activeCandidateSchema = z.object({
   comparison: candidateComparisonSchema.optional()
 });
 
+export const historyCandidateSchema = z.object({
+  index: z.number().int().nonnegative(),
+  path: z.string(),
+  status: candidateStatusSchema,
+  votes: z.array(voteRecordSchema).optional(),
+  comparison: candidateComparisonSchema.optional()
+});
+
 export const historyEntrySchema = z.object({
   timestamp: z.string(),
   stepIndex: z.number().int().positive(),
@@ -57,7 +67,8 @@ export const historyEntrySchema = z.object({
   promotedCandidateIndex: z.number().int().nonnegative().optional(),
   promotedCandidatePath: z.string().optional(),
   winningCandidateIndexes: z.array(z.number().int().nonnegative()),
-  consecutiveRejections: z.number().int().nonnegative()
+  consecutiveRejections: z.number().int().nonnegative(),
+  candidates: z.array(historyCandidateSchema).optional()
 });
 
 export const runStateSchema = z.object({
@@ -77,7 +88,9 @@ export const runStateSchema = z.object({
   skillsOriginalPath: z.string(),
   skillsPreviousPath: z.string(),
   incumbentPath: z.string().optional(),
+  providerOverride: generationProviderSchema.nullable().optional(),
   modelOverride: z.string().nullable().optional(),
+  omitSkillDiff: z.boolean().default(false),
   currentPhase: runPhaseSchema,
   activeCandidates: z.array(activeCandidateSchema),
   history: z.array(historyEntrySchema),
@@ -91,5 +104,6 @@ export type CandidateStatus = z.infer<typeof candidateStatusSchema>;
 export type VoteRecord = z.infer<typeof voteRecordSchema>;
 export type CandidateComparison = z.infer<typeof candidateComparisonSchema>;
 export type ActiveCandidate = z.infer<typeof activeCandidateSchema>;
+export type HistoryCandidate = z.infer<typeof historyCandidateSchema>;
 export type HistoryEntry = z.infer<typeof historyEntrySchema>;
 export type RunState = z.infer<typeof runStateSchema>;

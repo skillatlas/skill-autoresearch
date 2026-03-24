@@ -12,7 +12,10 @@ import {
 } from "./scorer.js";
 import { StateStore } from "./state-store.js";
 import { WorkspaceManager } from "./workspace.js";
-import { GenerationSpec } from "../types/generation.js";
+import {
+  GenerationProvider,
+  GenerationSpec
+} from "../types/generation.js";
 import { ScoreVote } from "../types/rubric.js";
 import { RunState } from "../types/state.js";
 
@@ -25,7 +28,9 @@ export interface RunOptions {
   maxSteps?: number;
   stasisSteps?: number;
   resume: boolean;
+  providerOverride?: GenerationProvider;
   modelOverride?: string;
+  omitSkillDiff: boolean;
   dryRun: boolean;
 }
 
@@ -72,7 +77,9 @@ function createInitialState(
     skillsOriginalPath: workspace.relativeToRoot(workspace.paths.skillsOriginalDir),
     skillsPreviousPath: workspace.relativeToRoot(workspace.paths.skillsPreviousDir),
     incumbentPath: undefined,
+    providerOverride: options.providerOverride ?? null,
     modelOverride: options.modelOverride ?? null,
+    omitSkillDiff: options.omitSkillDiff,
     currentPhase: "generate-baseline",
     activeCandidates: [],
     history: []
@@ -234,7 +241,9 @@ export class Orchestrator {
     const archivePath = await this.workspace.archiveExistingSteps(previewRunId, {
       dryRun: true
     });
-    const generations = await this.workspace.loadGenerationSpecs();
+    const generations = await this.workspace.loadGenerationSpecs({
+      providerOverride: this.options.providerOverride
+    });
     const providers = [...new Set(generations.map((generation) => generation.provider))];
 
     this.logger.info(`Dry run for workspace ${this.workspace.root}`);
@@ -253,7 +262,9 @@ export class Orchestrator {
       return;
     }
 
-    const rubric = await this.scorer.loadRubric(this.workspace.paths.rubricPath);
+    const rubric = await this.scorer.loadRubric(this.workspace.paths.rubricPath, {
+      providerOverride: this.options.providerOverride
+    });
     const modelLabel =
       this.options.modelOverride ?? rubric.modelId ?? "<provider default>";
     this.logger.info(
@@ -261,11 +272,16 @@ export class Orchestrator {
         ...new Set(rubric.commands.map((command) => command.outputType))
       ].join("+")})`
     );
+    this.logger.info(
+      `Skill diff evidence: ${this.options.omitSkillDiff ? "disabled" : "enabled"}`
+    );
   }
 
   private async generateBaseline(state: RunState): Promise<RunState> {
     const baselineDir = path.join(this.workspace.paths.stepsDir, "0", "baseline");
-    const generations = await this.workspace.loadGenerationSpecs();
+    const generations = await this.workspace.loadGenerationSpecs({
+      providerOverride: this.options.providerOverride
+    });
     await this.generateArtifactsForPromptSet({
       targetRoot: baselineDir,
       generations,
@@ -299,14 +315,18 @@ export class Orchestrator {
   private async mutateSkills(state: RunState): Promise<RunState> {
     await this.workspace.restoreSkillsFromPrevious();
     const sandbox = await this.workspace.createMutationSandbox(state.stepIndex);
+    const instructions = await this.workspace.loadInstructionsSpec({
+      providerOverride: this.options.providerOverride
+    });
 
     try {
       await this.containerRunner.runPrompt({
         containerRoot: sandbox.containerRoot,
         targetPath: sandbox.targetPath,
-        prompt: await this.workspace.readPrompt(this.workspace.paths.instructionsPath),
+        prompt: instructions.prompt,
         label: `Skill mutation for step ${state.stepIndex}`,
-        provider: "claude"
+        provider: instructions.provider,
+        modelId: instructions.modelId
       });
       await sandbox.applyChanges();
     } finally {
@@ -336,7 +356,9 @@ export class Orchestrator {
   }
 
   private async generateCandidates(state: RunState): Promise<RunState> {
-    const generations = await this.workspace.loadGenerationSpecs();
+    const generations = await this.workspace.loadGenerationSpecs({
+      providerOverride: this.options.providerOverride
+    });
     const pendingCandidates = state.activeCandidates.filter(
       (candidate) => candidate.status === "pending"
     );
@@ -365,7 +387,9 @@ export class Orchestrator {
       throw new Error("Cannot score candidates before an incumbent artifact exists.");
     }
 
-    const generations = await this.workspace.loadGenerationSpecs();
+    const generations = await this.workspace.loadGenerationSpecs({
+      providerOverride: this.options.providerOverride
+    });
     const requiredVoteCount = this.getRequiredVoteCount(generations);
     const incumbentPath = state.incumbentPath;
 
@@ -373,7 +397,9 @@ export class Orchestrator {
       return this.scoreCandidatesWithHumanReview(state, generations);
     }
 
-    const rubric = await this.scorer.loadRubric(this.workspace.paths.rubricPath);
+    const rubric = await this.scorer.loadRubric(this.workspace.paths.rubricPath, {
+      providerOverride: this.options.providerOverride
+    });
     const modelId = state.modelOverride ?? rubric.modelId;
     const pendingCandidates = state.activeCandidates.filter(
       (candidate) =>
@@ -407,6 +433,20 @@ export class Orchestrator {
           rubric,
           this.resolveGenerationArtifactPath(candidate.path, generation, generations.length)
         );
+        const comparisonEvidence = state.omitSkillDiff
+          ? []
+          : await this.scorer.collectSkillDiffEvidence(
+              this.resolveGenerationArtifactPath(
+                incumbentPath,
+                generation,
+                generations.length
+              ),
+              this.resolveGenerationArtifactPath(
+                candidate.path,
+                generation,
+                generations.length
+              )
+            );
 
         for (let attempt = completedVotes; attempt < state.voteCount; attempt += 1) {
           const vote = await this.scorer.runSingleVote({
@@ -414,7 +454,8 @@ export class Orchestrator {
             modelId,
             rubricPrompt: rubric.prompt,
             incumbentEvidence,
-            candidateEvidence
+            candidateEvidence,
+            comparisonEvidence
           });
 
           candidate.votes.push({
@@ -545,7 +586,14 @@ export class Orchestrator {
         promotedCandidateIndex: promotedCandidate.index,
         promotedCandidatePath: promotedCandidate.path,
         winningCandidateIndexes: winningCandidates.map((candidate) => candidate.index),
-        consecutiveRejections: 0
+        consecutiveRejections: 0,
+        candidates: state.activeCandidates.map((candidate) => ({
+          index: candidate.index,
+          path: candidate.path,
+          status: candidate.status,
+          votes: candidate.votes,
+          comparison: candidate.comparison
+        }))
       });
       this.logger.phase(
         `Accepted step ${state.stepIndex}; promoted candidate ${promotedCandidate.index}`
@@ -564,7 +612,14 @@ export class Orchestrator {
         accepted: false,
         incumbentPath: state.incumbentPath!,
         winningCandidateIndexes: winningCandidates.map((candidate) => candidate.index),
-        consecutiveRejections: state.consecutiveRejections
+        consecutiveRejections: state.consecutiveRejections,
+        candidates: state.activeCandidates.map((candidate) => ({
+          index: candidate.index,
+          path: candidate.path,
+          status: candidate.status,
+          votes: candidate.votes,
+          comparison: candidate.comparison
+        }))
       });
       this.logger.phase(
         `Rejected step ${state.stepIndex}; reverted skills to ${state.skillsPreviousPath}`
@@ -808,8 +863,16 @@ export class Orchestrator {
     if (state.stasisSteps !== this.options.stasisSteps) {
       mismatches.push(`stasis-steps=${state.stasisSteps}`);
     }
+    if ((state.providerOverride ?? undefined) !== this.options.providerOverride) {
+      mismatches.push(
+        `provider=${state.providerOverride ?? "<frontmatter or inferred default>"}`
+      );
+    }
     if ((state.modelOverride ?? undefined) !== this.options.modelOverride) {
       mismatches.push(`model=${state.modelOverride ?? "<rubric default>"}`);
+    }
+    if (state.omitSkillDiff !== this.options.omitSkillDiff) {
+      mismatches.push(`omit-skill-diff=${state.omitSkillDiff}`);
     }
     if (state.scoringMode !== this.options.scoringMode) {
       mismatches.push(`scoring-mode=${state.scoringMode}`);

@@ -4,7 +4,8 @@ coverage
 .DS_Store
 .env
 .skill-autoresearch
-skills*
+skills-original
+skills-previous
 steps
 archive
 .playwright-cli

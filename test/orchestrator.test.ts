@@ -89,6 +89,148 @@ class ConcurrentVoteScorer extends FakeScorer {
 }
 
 describe("orchestrator integration", () => {
+  it("uses the mutation provider and model from INSTRUCTIONS.md frontmatter", async () => {
+    const workspaceRoot = await createWorkspaceCopy();
+    await fs.writeFile(
+      path.join(workspaceRoot, "INSTRUCTIONS.md"),
+      "---\nprovider: codex\nmodel: gpt-5\n---\nImprove the skill.\n",
+      "utf8"
+    );
+
+    const mutationExecutions: Array<{ provider: string; modelId?: string }> = [];
+
+    await runOrchestrator({
+      workspaceRoot,
+      options: {
+        candidateCount: 1,
+        voteCount: 1,
+        maxSteps: 1
+      },
+      containerRunner: {
+        async runPrompt(execution) {
+          if (execution.label.startsWith("Skill mutation for step ")) {
+            mutationExecutions.push({
+              provider: execution.provider,
+              modelId: execution.modelId
+            });
+            await fs.writeFile(
+              path.join(execution.targetPath, "demo", "SKILL.md"),
+              "version=1\n",
+              "utf8"
+            );
+            return;
+          }
+
+          await fs.ensureDir(execution.targetPath);
+          await fs.writeFile(
+            path.join(execution.targetPath, "index.html"),
+            "score=1\n",
+            "utf8"
+          );
+        }
+      },
+      scorer: new FakeScorer(workspaceRoot)
+    });
+
+    expect(mutationExecutions).toEqual([
+      {
+        provider: "codex",
+        modelId: "gpt-5"
+      }
+    ]);
+  });
+
+  it("applies a provider override to mutation, generation, and rubric loading", async () => {
+    const workspaceRoot = await createWorkspaceCopy();
+    const executionProviders: Array<{ label: string; provider: string }> = [];
+    const scorer = new FakeScorer(workspaceRoot);
+
+    await runOrchestrator({
+      workspaceRoot,
+      options: {
+        candidateCount: 1,
+        voteCount: 1,
+        maxSteps: 1,
+        providerOverride: "codex"
+      },
+      containerRunner: {
+        async runPrompt(execution) {
+          executionProviders.push({
+            label: execution.label,
+            provider: execution.provider
+          });
+
+          if (execution.label.startsWith("Skill mutation for step ")) {
+            await fs.writeFile(
+              path.join(execution.targetPath, "demo", "SKILL.md"),
+              "version=1\n",
+              "utf8"
+            );
+            return;
+          }
+
+          await fs.ensureDir(execution.targetPath);
+          await fs.writeFile(
+            path.join(execution.targetPath, "index.html"),
+            "score=1\n",
+            "utf8"
+          );
+        }
+      },
+      scorer
+    });
+
+    expect(
+      executionProviders.map((execution) => execution.provider)
+    ).toEqual(["codex", "codex", "codex"]);
+    expect(scorer.providers).toEqual(["codex"]);
+  });
+
+  it("includes skill diff evidence in rubric scoring by default", async () => {
+    const workspaceRoot = await createWorkspaceCopy();
+    const scorer = new FakeScorer(workspaceRoot);
+
+    await runOrchestrator({
+      workspaceRoot,
+      options: {
+        candidateCount: 1,
+        voteCount: 1,
+        maxSteps: 1
+      },
+      containerRunner: new FakeContainerRunner(workspaceRoot),
+      scorer
+    });
+
+    expect(scorer.comparisonEvidenceCalls).toHaveLength(1);
+    expect(scorer.comparisonEvidenceCalls[0]).toEqual([
+      {
+        outputType: "text",
+        label: "skill-diff",
+        content: "Skill changed from version=0 to version=1."
+      }
+    ]);
+  });
+
+  it("omits skill diff evidence when requested", async () => {
+    const workspaceRoot = await createWorkspaceCopy();
+    const scorer = new FakeScorer(workspaceRoot);
+
+    await runOrchestrator({
+      workspaceRoot,
+      options: {
+        candidateCount: 1,
+        voteCount: 1,
+        maxSteps: 1,
+        omitSkillDiff: true
+      },
+      containerRunner: new FakeContainerRunner(workspaceRoot),
+      scorer
+    });
+
+    expect(scorer.comparisonEvidenceCalls).toHaveLength(1);
+    expect(scorer.comparisonEvidenceCalls[0]).toEqual([]);
+  });
+
   it("supports multiple numbered generation prompts per step", async () => {
     const workspaceRoot = await createWorkspaceCopy();
     await fs.remove(path.join(workspaceRoot, "GENERATION.md"));

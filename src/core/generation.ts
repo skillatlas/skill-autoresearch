@@ -5,6 +5,7 @@ import { z } from "zod";
 
 import { inferLocalAgent } from "./local-agent-inference.js";
 import {
+  GenerationProvider,
   GenerationSpec,
   generationProviderSchema,
   generationSpecSchema
@@ -46,14 +47,17 @@ export async function findGenerationPaths(workspaceRoot: string): Promise<string
 }
 
 export async function loadGeneration(
-  generationPath: string
+  generationPath: string,
+  options?: { providerOverride?: GenerationProvider }
 ): Promise<GenerationSpec> {
   const rawGeneration = await fs.readFile(generationPath, "utf8");
   const parsed = matter(rawGeneration);
   const frontmatter = generationFrontmatterSchema.parse(parsed.data);
   const prompt = parsed.content.trim();
   const provider =
-    frontmatter.provider ?? (await inferLocalAgent(path.dirname(generationPath)));
+    options?.providerOverride ??
+    frontmatter.provider ??
+    (await inferLocalAgent(path.dirname(generationPath)));
 
   if (prompt.length === 0) {
     throw new Error("Generation body must not be empty.");
@@ -69,7 +73,8 @@ export async function loadGeneration(
 }
 
 export async function loadGenerations(
-  workspaceRoot: string
+  workspaceRoot: string,
+  options?: { providerOverride?: GenerationProvider }
 ): Promise<GenerationSpec[]> {
   const generationPaths = await findGenerationPaths(workspaceRoot);
   if (generationPaths.length === 0) {
@@ -78,7 +83,9 @@ export async function loadGenerations(
     );
   }
 
-  return Promise.all(generationPaths.map((generationPath) => loadGeneration(generationPath)));
+  return Promise.all(
+    generationPaths.map((generationPath) => loadGeneration(generationPath, options))
+  );
 }
 
 export function getGenerationArtifactSubdir(spec: GenerationSpec): string {

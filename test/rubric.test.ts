@@ -275,6 +275,30 @@ Judge the outputs.`,
     expect(rubric.modelId).toBe("gpt-5.4");
   });
 
+  it("lets an override provider replace rubric frontmatter", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "rubric-"));
+    const rubricPath = path.join(tempDir, "RUBRIC.md");
+
+    await fs.writeFile(
+      rubricPath,
+      `---
+provider: openrouter
+model: openai/gpt-4.1
+outputType: text
+resultPath: "$STEP_PATH/index.html"
+---
+
+Judge the outputs.`,
+      "utf8"
+    );
+
+    const rubric = await loadRubric(rubricPath, {
+      providerOverride: "codex"
+    });
+
+    expect(rubric.provider).toBe("codex");
+  });
+
   it("supports Claude as a scoring provider", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "rubric-"));
     const rubricPath = path.join(tempDir, "RUBRIC.md");

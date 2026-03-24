@@ -38,6 +38,12 @@ const FORWARDED_ENV_VARS: Record<GenerationProvider, readonly string[]> = {
 
 let cachedContainerCliEntryPoint: string | undefined;
 
+interface HomeCopyEntry {
+  sourcePath: string;
+  targetPath?: string;
+  kind: "file" | "dir";
+}
+
 function isGenerationExecution(execution: ContainerExecution): boolean {
   return (
     execution.label === "Baseline generation" ||
@@ -141,12 +147,23 @@ function summarizeExecArgs(args: readonly string[]): string {
     .join(" ")}`;
 }
 
-function buildIsolatedHomeSetupCommand(configPaths: readonly string[]): string {
-  const copyCommands = configPaths.map((configPath) =>
-    configPath.endsWith(".json")
-      ? `if [ -f /root/${configPath} ]; then cp /root/${configPath} "$HOME/${configPath}"; fi`
-      : `if [ -d /root/${configPath} ]; then cp -R /root/${configPath} "$HOME/${configPath}"; fi`
-  );
+function buildHomeCopyCommand(entry: HomeCopyEntry): string {
+  const targetPath = entry.targetPath ?? entry.sourcePath;
+  const targetParentPath = path.posix.dirname(targetPath);
+  const ensureParentCommand =
+    targetParentPath === "."
+      ? undefined
+      : `mkdir -p "$HOME/${targetParentPath}"`;
+  const copyCommand =
+    entry.kind === "file"
+      ? `if [ -f /root/${entry.sourcePath} ]; then ${ensureParentCommand ? `${ensureParentCommand}; ` : ""}cp /root/${entry.sourcePath} "$HOME/${targetPath}"; fi`
+      : `if [ -d /root/${entry.sourcePath} ]; then ${ensureParentCommand ? `${ensureParentCommand}; ` : ""}cp -R /root/${entry.sourcePath} "$HOME/${targetPath}"; fi`;
+
+  return copyCommand;
+}
+
+function buildIsolatedHomeSetupCommand(entries: readonly HomeCopyEntry[]): string {
+  const copyCommands = entries.map((entry) => buildHomeCopyCommand(entry));
 
   return [
     'tmp_home="$(mktemp -d)"',
@@ -166,7 +183,10 @@ function buildClaudeCommand(
     : `claude --no-session-persistence${modelId ? ' --model "$3"' : ""} -p "$2"`;
 
   return [
-    buildIsolatedHomeSetupCommand([".claude", ".claude.json"]),
+    buildIsolatedHomeSetupCommand([
+      { sourcePath: ".claude", kind: "dir" },
+      { sourcePath: ".claude.json", kind: "file" }
+    ]),
     'cd "$1"',
     claudeCommand
   ].join("; ");
@@ -174,9 +194,8 @@ function buildClaudeCommand(
 
 function buildCodexCommand(modelId: string | undefined): string {
   return [
-    buildIsolatedHomeSetupCommand([".codex"]),
     'cd "$1"',
-    `codex exec --ephemeral --skip-git-repo-check -a never --sandbox workspace-write${modelId ? ' --model "$3"' : ""} "$2"`
+    `codex -a never exec --ephemeral --skip-git-repo-check --sandbox workspace-write${modelId ? ' --model "$3"' : ""} "$2"`
   ].join("; ");
 }
 

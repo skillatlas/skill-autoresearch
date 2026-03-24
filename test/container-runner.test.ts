@@ -24,9 +24,9 @@ const claudeDebugCommand =
 const claudeModelCommand =
   'tmp_home="$(mktemp -d)"; cleanup() { rm -rf "$tmp_home"; }; trap cleanup EXIT; export HOME="$tmp_home"; if [ -d /root/.claude ]; then cp -R /root/.claude "$HOME/.claude"; fi; if [ -f /root/.claude.json ]; then cp /root/.claude.json "$HOME/.claude.json"; fi; cd "$1"; claude --no-session-persistence --model "$3" -p "$2"';
 const codexCommand =
-  'tmp_home="$(mktemp -d)"; cleanup() { rm -rf "$tmp_home"; }; trap cleanup EXIT; export HOME="$tmp_home"; if [ -d /root/.codex ]; then cp -R /root/.codex "$HOME/.codex"; fi; cd "$1"; codex exec --ephemeral --skip-git-repo-check -a never --sandbox workspace-write "$2"';
+  'cd "$1"; codex -a never exec --ephemeral --skip-git-repo-check --sandbox workspace-write "$2"';
 const codexModelCommand =
-  'tmp_home="$(mktemp -d)"; cleanup() { rm -rf "$tmp_home"; }; trap cleanup EXIT; export HOME="$tmp_home"; if [ -d /root/.codex ]; then cp -R /root/.codex "$HOME/.codex"; fi; cd "$1"; codex exec --ephemeral --skip-git-repo-check -a never --sandbox workspace-write --model "$3" "$2"';
+  'cd "$1"; codex -a never exec --ephemeral --skip-git-repo-check --sandbox workspace-write --model "$3" "$2"';
 
 describe("container runner", () => {
   beforeEach(() => {
@@ -218,6 +218,24 @@ describe("container runner", () => {
       "steps/0/baseline",
       "Generate"
     ]);
+  });
+
+  it("uses the mounted Codex home directly inside the container", () => {
+    const args = buildContainerExecArgs(
+      "/tmp/container.js",
+      {
+        containerRoot: "/tmp/project",
+        targetPath: "/tmp/project/steps/0/baseline",
+        prompt: "Generate",
+        label: "Baseline generation",
+        provider: "codex"
+      },
+      {}
+    );
+
+    expect(args[6]).toBe(codexCommand);
+    expect(args[6]).not.toContain("mktemp -d");
+    expect(args[6]).not.toContain('export HOME="$tmp_home"');
   });
 
   it("fails when the target path is outside the workspace", () => {

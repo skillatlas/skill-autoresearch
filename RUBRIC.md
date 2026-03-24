@@ -1,5 +1,5 @@
 ---
-provider: codex
+provider: claude
 http_server: true
 commands:
   - outputType: text
@@ -54,4 +54,6 @@ You are a senior design critic and frontend engineer evaluating two candidate HT
 2. A candidate that excels at visual identity and typography but has minor code issues should generally beat a candidate with clean code but generic aesthetics.
 3. A candidate with a bold, coherent point of view — even if imperfect — is better than a safe, forgettable one.
 4. If both candidates are roughly equal, prefer the one with more creative ambition.
-5. Set confidence high (>0.8) when one candidate is clearly stronger. Set confidence low (<0.4) when the difference is marginal.
+5. When comparison evidence includes a skill diff, use it as supporting evidence about whether the changed guidance plausibly caused the observed result. If the outputs are close, prefer the candidate whose skill changes are more targeted and better aligned with the visible improvement.
+6. Do not reward a candidate for a good-sounding skill diff if the actual page is worse.
+7. Set confidence high (>0.8) when one candidate is clearly stronger. Set confidence low (<0.4) when the difference is marginal.

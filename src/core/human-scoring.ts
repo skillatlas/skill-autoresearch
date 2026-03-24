@@ -5,9 +5,21 @@ import path from "node:path";
 import { URL } from "node:url";
 
 import { Logger } from "./logger.js";
+import {
+  buildSkillDiffFromDirectories,
+  type SkillDiff as SessionSkillDiff,
+  type SkillDiffFile as SessionDiffFile,
+  type SkillDiffLine as SessionDiffLine
+} from "./skill-diff.js";
 import { selectBestWinningCandidate } from "./scorer.js";
 import { ScoreVote } from "../types/rubric.js";
-import { ActiveCandidate, RunState } from "../types/state.js";
+import {
+  ActiveCandidate,
+  CandidateComparison,
+  CandidateStatus,
+  HistoryEntry,
+  RunState
+} from "../types/state.js";
 
 export interface HumanReviewCandidate {
   index: number;
@@ -62,31 +74,18 @@ interface SessionCandidate {
   totalVotes: number;
   status: string;
   path: string;
+  score: SessionCandidateScore | null;
 }
 
-interface SessionDiffLine {
-  type: "context" | "added" | "removed" | "spacer";
-  oldLineNumber: number | null;
-  newLineNumber: number | null;
-  text: string;
-  omittedLineCount?: number;
-}
-
-interface SessionDiffFile {
-  path: string;
-  status: "added" | "removed" | "modified";
-  addedLineCount: number;
-  removedLineCount: number;
-  lines: SessionDiffLine[];
-}
-
-interface SessionSkillDiff {
-  compareTarget: "original" | "previous";
-  label: string;
-  basePath: string;
-  currentPath: string;
-  changedFileCount: number;
-  files: SessionDiffFile[];
+interface SessionCandidateScore {
+  summary: string;
+  detail: string;
+  tone: "winner" | "loser" | "progress";
+  aVotes: number;
+  bVotes: number;
+  totalVotes: number;
+  averageConfidence: number | null;
+  isWinner: boolean | null;
 }
 
 interface SessionSkillDiffState {
@@ -109,6 +108,7 @@ interface SessionCurrentComparison {
   candidateUrl: string;
   votingEnabled: boolean;
   statusLabel: string;
+  score: SessionCandidateScore | null;
 }
 
 interface SessionCurrentSnapshot {
@@ -131,6 +131,13 @@ interface SessionArtifactView {
   isWinner: boolean;
 }
 
+interface SessionStepCandidateView extends SessionArtifactView {
+  index: number;
+  status: string;
+  score: SessionCandidateScore | null;
+  rationales: string[];
+}
+
 interface SessionStepView {
   key: string;
   title: string;
@@ -142,6 +149,8 @@ interface SessionStepView {
   canVote: boolean;
   incumbent: SessionArtifactView | null;
   candidate: SessionArtifactView | null;
+  candidateChoices: SessionStepCandidateView[];
+  defaultCandidateIndex: number | null;
   skillDiff: SessionSkillDiffState | null;
   statusText: string;
 }
@@ -149,6 +158,10 @@ interface SessionStepView {
 const PREVIEW_VIEWPORTS = [480, 960] as const;
 const DEFAULT_PREVIEW_VIEWPORT = 960;
 const DEFAULT_PREVIEW_HEIGHT = 420;
+
+function formatConfidencePercent(value: number): string {
+  return `${Math.round(value * 100)}%`;
+}
 
 function escapeHtml(value: string): string {
   return value
@@ -230,265 +243,6 @@ async function listArtifactFiles(rootPath: string): Promise<string[]> {
 
   await walk(rootPath);
   return files;
-}
-
-function listRelativeFilesSync(rootPath: string): string[] {
-  if (!fs.existsSync(rootPath)) {
-    return [];
-  }
-
-  const files: string[] = [];
-
-  function walk(currentPath: string): void {
-    const entries = fs.readdirSync(currentPath, { withFileTypes: true });
-    entries.sort((left, right) => left.name.localeCompare(right.name));
-
-    for (const entry of entries) {
-      const absolutePath = path.join(currentPath, entry.name);
-      if (entry.isDirectory()) {
-        walk(absolutePath);
-        continue;
-      }
-
-      files.push(path.relative(rootPath, absolutePath).split(path.sep).join("/"));
-    }
-  }
-
-  walk(rootPath);
-  return files;
-}
-
-function normalizeFileContent(value: string): string {
-  return value.replaceAll("\r\n", "\n");
-}
-
-function splitFileLines(value: string): string[] {
-  if (value.length === 0) {
-    return [];
-  }
-
-  const normalized = normalizeFileContent(value);
-  const lines = normalized.split("\n");
-  if (normalized.endsWith("\n")) {
-    lines.pop();
-  }
-
-  return lines;
-}
-
-function buildRawDiffLines(
-  beforeLines: string[],
-  afterLines: string[]
-): SessionDiffLine[] {
-  const lcs = Array.from({ length: beforeLines.length + 1 }, () =>
-    Array<number>(afterLines.length + 1).fill(0)
-  );
-
-  for (let beforeIndex = beforeLines.length - 1; beforeIndex >= 0; beforeIndex -= 1) {
-    for (let afterIndex = afterLines.length - 1; afterIndex >= 0; afterIndex -= 1) {
-      lcs[beforeIndex]![afterIndex] =
-        beforeLines[beforeIndex] === afterLines[afterIndex]
-          ? (lcs[beforeIndex + 1]?.[afterIndex + 1] ?? 0) + 1
-          : Math.max(
-              lcs[beforeIndex + 1]?.[afterIndex] ?? 0,
-              lcs[beforeIndex]?.[afterIndex + 1] ?? 0
-            );
-    }
-  }
-
-  const lines: SessionDiffLine[] = [];
-  let beforeIndex = 0;
-  let afterIndex = 0;
-  let oldLineNumber = 1;
-  let newLineNumber = 1;
-
-  while (beforeIndex < beforeLines.length && afterIndex < afterLines.length) {
-    if (beforeLines[beforeIndex] === afterLines[afterIndex]) {
-      lines.push({
-        type: "context",
-        oldLineNumber,
-        newLineNumber,
-        text: beforeLines[beforeIndex]
-      });
-      beforeIndex += 1;
-      afterIndex += 1;
-      oldLineNumber += 1;
-      newLineNumber += 1;
-      continue;
-    }
-
-    if ((lcs[beforeIndex + 1]?.[afterIndex] ?? 0) >= (lcs[beforeIndex]?.[afterIndex + 1] ?? 0)) {
-      lines.push({
-        type: "removed",
-        oldLineNumber,
-        newLineNumber: null,
-        text: beforeLines[beforeIndex]
-      });
-      beforeIndex += 1;
-      oldLineNumber += 1;
-      continue;
-    }
-
-    lines.push({
-      type: "added",
-      oldLineNumber: null,
-      newLineNumber,
-      text: afterLines[afterIndex]
-    });
-    afterIndex += 1;
-    newLineNumber += 1;
-  }
-
-  while (beforeIndex < beforeLines.length) {
-    lines.push({
-      type: "removed",
-      oldLineNumber,
-      newLineNumber: null,
-      text: beforeLines[beforeIndex]
-    });
-    beforeIndex += 1;
-    oldLineNumber += 1;
-  }
-
-  while (afterIndex < afterLines.length) {
-    lines.push({
-      type: "added",
-      oldLineNumber: null,
-      newLineNumber,
-      text: afterLines[afterIndex]
-    });
-    afterIndex += 1;
-    newLineNumber += 1;
-  }
-
-  return lines;
-}
-
-function compactDiffLines(
-  lines: SessionDiffLine[],
-  contextRadius = 3
-): SessionDiffLine[] {
-  const changedIndexes = lines.flatMap((line, index) =>
-    line.type === "added" || line.type === "removed" ? [index] : []
-  );
-
-  if (changedIndexes.length === 0) {
-    return [];
-  }
-
-  const ranges: Array<{ start: number; end: number }> = [];
-  for (const index of changedIndexes) {
-    const start = Math.max(0, index - contextRadius);
-    const end = Math.min(lines.length - 1, index + contextRadius);
-    const previousRange = ranges[ranges.length - 1];
-
-    if (previousRange && start <= previousRange.end + 1) {
-      previousRange.end = Math.max(previousRange.end, end);
-      continue;
-    }
-
-    ranges.push({ start, end });
-  }
-
-  const compacted: SessionDiffLine[] = [];
-  let cursor = 0;
-
-  for (const range of ranges) {
-    if (range.start > cursor) {
-      compacted.push({
-        type: "spacer",
-        oldLineNumber: null,
-        newLineNumber: null,
-        text: "",
-        omittedLineCount: range.start - cursor
-      });
-    }
-
-    compacted.push(...lines.slice(range.start, range.end + 1));
-    cursor = range.end + 1;
-  }
-
-  if (cursor < lines.length) {
-    compacted.push({
-      type: "spacer",
-      oldLineNumber: null,
-      newLineNumber: null,
-      text: "",
-      omittedLineCount: lines.length - cursor
-    });
-  }
-
-  return compacted;
-}
-
-function buildSkillDiffFromDirectories(input: {
-  basePath: string;
-  baseLabel: string;
-  currentPath: string;
-  currentLabel: string;
-  compareTarget: "original" | "previous";
-  label: string;
-}): SessionSkillDiff | null {
-  if (!fs.existsSync(input.basePath) || !fs.existsSync(input.currentPath)) {
-    return null;
-  }
-
-  const filePaths = [
-    ...new Set([
-      ...listRelativeFilesSync(input.basePath),
-      ...listRelativeFilesSync(input.currentPath)
-    ])
-  ].sort((left, right) => left.localeCompare(right));
-  const files: SessionDiffFile[] = [];
-
-  for (const relativePath of filePaths) {
-    const baseFilePath = path.join(input.basePath, relativePath);
-    const currentFilePath = path.join(input.currentPath, relativePath);
-    const hasBaseFile = fs.existsSync(baseFilePath);
-    const hasCurrentFile = fs.existsSync(currentFilePath);
-
-    if (!hasBaseFile && !hasCurrentFile) {
-      continue;
-    }
-
-    const baseContent = hasBaseFile
-      ? normalizeFileContent(fs.readFileSync(baseFilePath, "utf8"))
-      : "";
-    const currentContent = hasCurrentFile
-      ? normalizeFileContent(fs.readFileSync(currentFilePath, "utf8"))
-      : "";
-
-    if (baseContent === currentContent) {
-      continue;
-    }
-
-    const rawLines = buildRawDiffLines(
-      splitFileLines(baseContent),
-      splitFileLines(currentContent)
-    );
-
-    files.push({
-      path: relativePath,
-      status:
-        !hasBaseFile ? "added" : !hasCurrentFile ? "removed" : "modified",
-      addedLineCount: rawLines.filter((line) => line.type === "added").length,
-      removedLineCount: rawLines.filter((line) => line.type === "removed").length,
-      lines: compactDiffLines(rawLines)
-    });
-  }
-
-  if (files.length === 0) {
-    return null;
-  }
-
-  return {
-    compareTarget: input.compareTarget,
-    label: input.label,
-    basePath: input.baseLabel,
-    currentPath: input.currentLabel,
-    changedFileCount: files.length,
-    files
-  };
 }
 
 async function readRequestBody(request: IncomingMessage): Promise<string> {
@@ -931,14 +685,91 @@ export class LocalHumanReviewService implements HumanReviewService {
       return [];
     }
 
+    const includeScore = state.scoringMode === "rubric";
+
     return state.activeCandidates.map((candidate) => ({
       index: candidate.index,
       completedVotes:
         this.activeReview?.candidateProgress.get(candidate.index) ?? candidate.votes.length,
       totalVotes: state.voteCount,
       status: candidate.status,
-      path: path.resolve(state.workspaceRoot, candidate.path)
+      path: path.resolve(state.workspaceRoot, candidate.path),
+      score: includeScore ? this.buildCandidateScore(candidate) : null
     }));
+  }
+
+  private buildCandidateScore(candidate: ActiveCandidate): SessionCandidateScore | null {
+    if (candidate.comparison) {
+      return this.buildComparisonScore(candidate.comparison, candidate.status);
+    }
+
+    const voteTotal = candidate.votes.length;
+    if (voteTotal === 0) {
+      return null;
+    }
+
+    const aVotes = candidate.votes.filter((vote) => vote.winner === "A").length;
+    const bVotes = candidate.votes.filter((vote) => vote.winner === "B").length;
+    const averageConfidence =
+      candidate.votes.reduce((sum, vote) => sum + vote.confidence, 0) / voteTotal;
+    const detailLabel =
+      bVotes === aVotes ? "Tied" : bVotes > aVotes ? "Leading" : "Trailing";
+
+    return {
+      summary: `${bVotes} candidate · ${aVotes} incumbent`,
+      detail: `${detailLabel} · avg confidence ${formatConfidencePercent(averageConfidence)}`,
+      tone: "progress",
+      aVotes,
+      bVotes,
+      totalVotes: voteTotal,
+      averageConfidence,
+      isWinner: null
+    };
+  }
+
+  private buildComparisonScore(
+    comparison: CandidateComparison | undefined,
+    status: CandidateStatus
+  ): SessionCandidateScore | null {
+    if (!comparison) {
+      return null;
+    }
+
+    const voteTotal = comparison.aVotes + comparison.bVotes;
+    if (voteTotal === 0) {
+      return null;
+    }
+
+    const isFinalStatus =
+      status === "scored" || status === "accepted" || status === "rejected";
+    const detailLabel =
+      isFinalStatus
+        ? comparison.isWinner
+          ? "Won"
+          : "Lost"
+        : comparison.bVotes === comparison.aVotes
+          ? "Tied"
+          : comparison.bVotes > comparison.aVotes
+            ? "Leading"
+            : "Trailing";
+
+    return {
+      summary: `${comparison.bVotes} candidate · ${comparison.aVotes} incumbent`,
+      detail:
+        `${detailLabel} · avg confidence ${formatConfidencePercent(comparison.averageConfidence)}`,
+      tone: isFinalStatus ? (comparison.isWinner ? "winner" : "loser") : "progress",
+      aVotes: comparison.aVotes,
+      bVotes: comparison.bVotes,
+      totalVotes: voteTotal,
+      averageConfidence: comparison.averageConfidence,
+      isWinner: comparison.isWinner
+    };
+  }
+
+  private buildCandidateRationales(
+    votes: ReadonlyArray<{ rationale: string }>
+  ): string[] {
+    return [...new Set(votes.map((vote) => vote.rationale.trim()).filter(Boolean))];
   }
 
   private buildCurrentSnapshot(): SessionCurrentSnapshot | null {
@@ -974,7 +805,8 @@ export class LocalHumanReviewService implements HumanReviewService {
         incumbentUrl: `${this.baseUrl}/artifact/${incumbentArtifactId}/`,
         candidateUrl: `${this.baseUrl}/artifact/${candidateArtifactId}/`,
         votingEnabled: true,
-        statusLabel: "Which version looks better?"
+        statusLabel: "Which version looks better?",
+        score: null
       },
       artifacts: new Map<string, ArtifactRef>([
         [incumbentArtifactId, { label: "Incumbent", path: this.activeReview.input.incumbentPath }],
@@ -990,12 +822,57 @@ export class LocalHumanReviewService implements HumanReviewService {
   }
 
   private buildRubricSnapshot(): SessionCurrentSnapshot | null {
-    if (!this.baseUrl || this.latestState?.scoringMode !== "rubric") {
+    const state = this.latestState;
+    if (!this.baseUrl || state?.scoringMode !== "rubric") {
       return null;
     }
 
+    const currentChoices = this.buildCurrentRubricCandidateChoices();
+    if (state.incumbentPath && currentChoices.length > 0) {
+      const selectedCandidate = this.selectDisplayCandidate(
+        state.activeCandidates.filter((candidate) =>
+          currentChoices.some((choice) => choice.index === candidate.index)
+        )
+      );
+      const selectedChoice =
+        currentChoices.find((choice) => choice.index === selectedCandidate?.index) ??
+        currentChoices[0]!;
+      const incumbentPath = path.resolve(state.workspaceRoot, state.incumbentPath);
+
+      return {
+        comparison: {
+          candidateIndex: selectedChoice.index,
+          candidateLabel: selectedChoice.label,
+          attempt: null,
+          comparisonNumber: null,
+          incumbentPath,
+          candidatePath: selectedChoice.path,
+          incumbentUrl: `${this.baseUrl}/artifact/incumbent/`,
+          candidateUrl: `${this.baseUrl}/artifact/candidate-${selectedChoice.index}/`,
+          votingEnabled: false,
+          statusLabel:
+            currentChoices.length > 1
+              ? "Switch candidates to inspect each rubric comparison."
+              : "Inspect the current rubric comparison.",
+          score: selectedChoice.score
+        },
+        artifacts: new Map<string, ArtifactRef>([
+          ["incumbent", { label: "Incumbent", path: incumbentPath }],
+          ...currentChoices.map(
+            (choice): [string, ArtifactRef] => [
+              `candidate-${choice.index}`,
+              {
+                label: choice.label,
+                path: choice.path
+              }
+            ]
+          )
+        ])
+      };
+    }
+
     const comparison =
-      this.latestRubricComparison ?? this.deriveRubricComparisonFromHistory(this.latestState);
+      this.latestRubricComparison ?? this.deriveRubricComparisonFromHistory(state);
     if (!comparison) {
       return null;
     }
@@ -1016,7 +893,8 @@ export class LocalHumanReviewService implements HumanReviewService {
         votingEnabled: false,
         statusLabel: comparison.accepted
           ? `Latest completed rubric step kept candidate ${comparison.candidateIndex}.`
-          : `Latest completed rubric step kept the incumbent over candidate ${comparison.candidateIndex}.`
+          : `Latest completed rubric step kept the incumbent over candidate ${comparison.candidateIndex}.`,
+        score: null
       },
       artifacts: new Map<string, ArtifactRef>([
         [incumbentArtifactId, { label: "Incumbent", path: comparison.incumbentPath }],
@@ -1029,6 +907,31 @@ export class LocalHumanReviewService implements HumanReviewService {
         ]
       ])
     };
+  }
+
+  private buildCurrentRubricCandidateChoices(): SessionStepCandidateView[] {
+    const state = this.latestState;
+    if (!state || !this.baseUrl || state.scoringMode !== "rubric") {
+      return [];
+    }
+
+    return state.activeCandidates
+      .map((candidate) => ({
+        candidate,
+        resolvedPath: path.resolve(state.workspaceRoot, candidate.path)
+      }))
+      .filter(({ candidate, resolvedPath }) => candidate.status !== "pending" && fs.existsSync(resolvedPath))
+      .sort((left, right) => left.candidate.index - right.candidate.index)
+      .map(({ candidate, resolvedPath }) => ({
+        index: candidate.index,
+        label: `Candidate ${candidate.index}`,
+        path: resolvedPath,
+        url: `${this.baseUrl}/artifact/candidate-${candidate.index}/`,
+        isWinner: candidate.comparison?.isWinner ?? false,
+        status: candidate.status,
+        score: this.buildCandidateScore(candidate),
+        rationales: this.buildCandidateRationales(candidate.votes)
+      }));
   }
 
   private captureRubricComparison(state: RunState): void {
@@ -1147,6 +1050,26 @@ export class LocalHumanReviewService implements HumanReviewService {
 
     const currentSnapshot = this.buildCurrentSnapshot();
     const comparison = currentSnapshot?.comparison ?? null;
+    const rubricCandidateChoices = this.buildCurrentRubricCandidateChoices();
+    const fallbackCandidateView =
+      comparison
+        ? {
+            index: comparison.candidateIndex,
+            label: comparison.candidateLabel,
+            path: comparison.candidatePath,
+            url: comparison.candidateUrl,
+            isWinner: false,
+            status: comparison.votingEnabled ? "generated" : "scored",
+            score: comparison.score,
+            rationales: []
+          }
+        : null;
+    const candidateChoices =
+      rubricCandidateChoices.length > 0
+        ? rubricCandidateChoices
+        : fallbackCandidateView
+          ? [fallbackCandidateView]
+          : [];
 
     return {
       key: "current",
@@ -1163,7 +1086,7 @@ export class LocalHumanReviewService implements HumanReviewService {
           ? {
               label: "Incumbent",
               path: comparison.incumbentPath,
-              url: `${this.baseUrl}/artifact/current-incumbent/`,
+              url: comparison.incumbentUrl,
               isWinner: false
             }
           : null,
@@ -1172,10 +1095,15 @@ export class LocalHumanReviewService implements HumanReviewService {
           ? {
               label: comparison.candidateLabel,
               path: comparison.candidatePath,
-              url: `${this.baseUrl}/artifact/current-candidate-${comparison.candidateIndex}/`,
+              url: comparison.candidateUrl,
               isWinner: false
             }
           : null,
+      candidateChoices,
+      defaultCandidateIndex:
+        candidateChoices.find((choice) => choice.index === comparison?.candidateIndex)?.index ??
+        candidateChoices[0]?.index ??
+        null,
       skillDiff: this.buildSkillDiff(),
       statusText:
         comparison?.statusLabel ?? "Select Current to follow progress as the run advances."
@@ -1202,6 +1130,7 @@ export class LocalHumanReviewService implements HumanReviewService {
     entry: RunState["history"][number],
     incumbentBeforePath: string
   ): SessionStepView {
+    const candidateChoices = this.buildHistoricalCandidateChoices(entry);
     const comparisonArtifact = this.resolveHistoricalComparisonArtifact(entry);
     const outcome = entry.accepted ? "accepted" : "rejected";
     const promotedLabel =
@@ -1219,6 +1148,13 @@ export class LocalHumanReviewService implements HumanReviewService {
       comparisonArtifact === null
         ? null
         : this.buildHistoricalSkillDiff(incumbentBeforePath, comparisonArtifact.path);
+    const defaultCandidateIndex =
+      candidateChoices.find((candidate) => candidate.index === entry.promotedCandidateIndex)?.index ??
+      candidateChoices.find((candidate) =>
+        entry.winningCandidateIndexes.includes(candidate.index)
+      )?.index ??
+      candidateChoices[0]?.index ??
+      null;
 
     return {
       key: `step-${entry.stepIndex}`,
@@ -1248,6 +1184,8 @@ export class LocalHumanReviewService implements HumanReviewService {
               isWinner: entry.accepted
             }
           : null,
+      candidateChoices,
+      defaultCandidateIndex,
       skillDiff:
         historicalSkillDiff === null
           ? null
@@ -1261,6 +1199,60 @@ export class LocalHumanReviewService implements HumanReviewService {
             },
       statusText: `Winner: ${winnerLabel}.`
     };
+  }
+
+  private buildHistoricalCandidateChoices(entry: HistoryEntry): SessionStepCandidateView[] {
+    const state = this.latestState;
+    if (!state || !this.baseUrl) {
+      return [];
+    }
+
+    if (entry.candidates && entry.candidates.length > 0) {
+      return entry.candidates
+        .map((candidate) => ({
+          candidate,
+          resolvedPath: this.resolveWorkspacePath(candidate.path)
+        }))
+        .filter(({ resolvedPath }) => fs.existsSync(resolvedPath))
+        .sort((left, right) => left.candidate.index - right.candidate.index)
+        .map(({ candidate, resolvedPath }) => ({
+          index: candidate.index,
+          label: `Candidate ${candidate.index}`,
+          path: resolvedPath,
+          url: `${this.baseUrl}/artifact/step-${entry.stepIndex}-candidate-${candidate.index}/`,
+          isWinner: candidate.comparison?.isWinner ?? false,
+          status: candidate.status,
+          score: this.buildComparisonScore(candidate.comparison, candidate.status),
+          rationales: this.buildCandidateRationales(candidate.votes ?? [])
+        }));
+    }
+
+    const preferredIndexes =
+      entry.accepted && entry.promotedCandidateIndex !== undefined
+        ? [entry.promotedCandidateIndex]
+        : entry.winningCandidateIndexes;
+    const allCandidateIndexes = Array.from({ length: state.candidateCount }, (_, index) => index);
+    const candidateIndexes = [...new Set([...preferredIndexes, ...allCandidateIndexes])];
+
+    return candidateIndexes
+      .map((candidateIndex) => ({
+        index: candidateIndex,
+        resolvedPath: this.resolveWorkspacePath(
+          path.join("steps", String(entry.stepIndex), "candidates", String(candidateIndex))
+        )
+      }))
+      .filter(({ resolvedPath }) => fs.existsSync(resolvedPath))
+      .map(({ index, resolvedPath }) => ({
+        index,
+        label: `Candidate ${index}`,
+        path: resolvedPath,
+        url: `${this.baseUrl}/artifact/step-${entry.stepIndex}-candidate-${index}/`,
+        isWinner: entry.winningCandidateIndexes.includes(index),
+        status:
+          entry.accepted && entry.promotedCandidateIndex === index ? "accepted" : "rejected",
+        score: null,
+        rationales: []
+      }));
   }
 
   private resolveHistoricalComparisonArtifact(
@@ -1334,6 +1326,40 @@ export class LocalHumanReviewService implements HumanReviewService {
       }
 
       return currentSnapshot?.artifacts.get(`candidate-${candidateIndex}`) ?? null;
+    }
+
+    const historicalCandidateMatch = /^step-(\d+)-candidate-(\d+)$/.exec(artifactId);
+    if (historicalCandidateMatch) {
+      const [, rawStepIndex, rawCandidateIndex] = historicalCandidateMatch;
+      const stepIndex = Number(rawStepIndex);
+      const candidateIndex = Number(rawCandidateIndex);
+      const state = this.latestState;
+      if (
+        !state ||
+        !Number.isInteger(stepIndex) ||
+        stepIndex <= 0 ||
+        !Number.isInteger(candidateIndex) ||
+        candidateIndex < 0
+      ) {
+        return null;
+      }
+
+      const historyEntry = state.history.find((entry) => entry.stepIndex === stepIndex);
+      if (!historyEntry) {
+        return null;
+      }
+
+      const candidateChoice = this.buildHistoricalCandidateChoices(historyEntry).find(
+        (candidate) => candidate.index === candidateIndex
+      );
+      if (!candidateChoice) {
+        return null;
+      }
+
+      return {
+        label: candidateChoice.label,
+        path: candidateChoice.path
+      };
     }
 
     const historicalArtifactMatch = /^step-(\d+)-(incumbent|candidate)$/.exec(artifactId);
@@ -1927,7 +1953,132 @@ export class LocalHumanReviewService implements HumanReviewService {
       }
 
       .panel-copy {
+        display: grid;
+        gap: 12px;
         padding: 0 18px 14px;
+      }
+
+      .panel-score {
+        display: grid;
+        gap: 4px;
+      }
+
+      .panel-score[hidden] {
+        display: none;
+      }
+
+      .panel-score-summary {
+        color: var(--ink);
+        font-family: "Courier New", monospace;
+        font-size: 12px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      .panel-score-detail {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.5;
+      }
+
+      .panel-rationales {
+        display: grid;
+        gap: 8px;
+      }
+
+      .panel-rationales[hidden] {
+        display: none;
+      }
+
+      .panel-rationales-title {
+        color: var(--accent-strong);
+        font-family: "Courier New", monospace;
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .panel-rationales-list {
+        display: grid;
+        gap: 8px;
+        margin: 0;
+        padding-left: 18px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.55;
+      }
+
+      .candidate-picker {
+        display: grid;
+        gap: 10px;
+      }
+
+      .candidate-picker[hidden] {
+        display: none;
+      }
+
+      .candidate-picker-grid {
+        display: grid;
+        gap: 10px;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      }
+
+      .candidate-option {
+        display: grid;
+        gap: 6px;
+        padding: 12px 14px;
+        border: 1px solid var(--line);
+        background: rgba(26, 26, 31, 0.7);
+        color: var(--ink);
+        text-align: left;
+      }
+
+      .candidate-option[aria-pressed="true"] {
+        border-color: var(--accent-strong);
+        background:
+          linear-gradient(135deg, rgba(217, 119, 87, 0.12), transparent 78%),
+          rgba(26, 26, 31, 0.94);
+      }
+
+      .candidate-option[data-tone="winner"] {
+        border-left: 4px solid #6ee7b7;
+      }
+
+      .candidate-option[data-tone="loser"] {
+        border-left: 4px solid #f87171;
+      }
+
+      .candidate-option[data-tone="progress"] {
+        border-left: 4px solid var(--accent-strong);
+      }
+
+      .candidate-option-label {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 10px;
+      }
+
+      .candidate-option-status {
+        color: var(--muted);
+        font-family: "Courier New", monospace;
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .candidate-option-score {
+        color: var(--ink);
+        font-family: "Courier New", monospace;
+        font-size: 12px;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+
+      .candidate-option-detail {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.5;
       }
 
       .preview-shell {
@@ -2046,7 +2197,7 @@ export class LocalHumanReviewService implements HumanReviewService {
 
       button.viewport-button[aria-pressed="true"] {
         background: var(--ink);
-        color: #e4e4e7;
+        color: var(--paper);
       }
 
       button:disabled,
@@ -2133,7 +2284,7 @@ export class LocalHumanReviewService implements HumanReviewService {
 
       .diff-toggle-button[aria-pressed="true"] {
         background: var(--ink);
-        color: #e4e4e7;
+        color: var(--paper);
       }
 
       .diff-summary {
@@ -2417,6 +2568,17 @@ export class LocalHumanReviewService implements HumanReviewService {
           </header>
           <div class="panel-copy">
             <div class="panel-path" id="candidate-path"></div>
+            <div class="panel-score" id="candidate-score" hidden>
+              <div class="panel-score-summary" id="candidate-score-summary"></div>
+              <div class="panel-score-detail" id="candidate-score-detail"></div>
+            </div>
+            <div class="panel-rationales" id="candidate-rationales" hidden>
+              <div class="panel-rationales-title">Rubric rationale</div>
+              <ul class="panel-rationales-list" id="candidate-rationales-list"></ul>
+            </div>
+            <div class="candidate-picker" id="candidate-picker" hidden>
+              <div class="candidate-picker-grid" id="candidate-picker-grid"></div>
+            </div>
           </div>
           <div class="preview-shell" id="candidate-preview" hidden>
             <div class="frame-wrap" id="candidate-wrap">
@@ -2457,6 +2619,13 @@ export class LocalHumanReviewService implements HumanReviewService {
       const incumbentPath = document.getElementById("incumbent-path");
       const candidatePath = document.getElementById("candidate-path");
       const candidateLabel = document.getElementById("candidate-label");
+      const candidateScore = document.getElementById("candidate-score");
+      const candidateScoreSummary = document.getElementById("candidate-score-summary");
+      const candidateScoreDetail = document.getElementById("candidate-score-detail");
+      const candidateRationales = document.getElementById("candidate-rationales");
+      const candidateRationalesList = document.getElementById("candidate-rationales-list");
+      const candidatePicker = document.getElementById("candidate-picker");
+      const candidatePickerGrid = document.getElementById("candidate-picker-grid");
       const incumbentBadge = document.getElementById("incumbent-badge");
       const candidateBadge = document.getElementById("candidate-badge");
       const incumbentPreview = document.getElementById("incumbent-preview");
@@ -2485,6 +2654,7 @@ export class LocalHumanReviewService implements HumanReviewService {
       const DEFAULT_FRAME_HEIGHT = ${DEFAULT_PREVIEW_HEIGHT};
       let currentSession = null;
       let selectedStepKey = "current";
+      const selectedCandidateIndexes = new Map();
       let viewportWidth = loadViewportWidth();
       let selectedSkillDiffTarget = loadSkillDiffTarget();
       const previewFrames = [
@@ -2615,6 +2785,13 @@ export class LocalHumanReviewService implements HumanReviewService {
         incumbentPath.textContent = "";
         candidatePath.textContent = "";
         candidateLabel.textContent = "Candidate";
+        candidateScore.hidden = true;
+        candidateScoreSummary.textContent = "";
+        candidateScoreDetail.textContent = "";
+        candidateRationales.hidden = true;
+        candidateRationalesList.innerHTML = "";
+        candidatePicker.hidden = true;
+        candidatePickerGrid.innerHTML = "";
         clearPreviewFrame(previewFrames[0]);
         clearPreviewFrame(previewFrames[1]);
         setPanelBadge(incumbentBadge, "", "");
@@ -2663,6 +2840,128 @@ export class LocalHumanReviewService implements HumanReviewService {
         element.hidden = false;
         element.textContent = text;
         element.dataset.tone = tone;
+      }
+
+      function normalizeCandidateChoices(view) {
+        if (Array.isArray(view?.candidateChoices) && view.candidateChoices.length > 0) {
+          return view.candidateChoices;
+        }
+
+        if (view?.candidate) {
+          return [
+            {
+              index: view.defaultCandidateIndex ?? 0,
+              label: view.candidate.label,
+              path: view.candidate.path,
+              url: view.candidate.url,
+              isWinner: view.candidate.isWinner,
+              status: view.outcome === "current" ? "scored" : view.outcome,
+              score: null,
+              rationales: []
+            }
+          ];
+        }
+
+        return [];
+      }
+
+      function getSelectedCandidateChoice(view) {
+        const choices = normalizeCandidateChoices(view);
+        if (choices.length === 0) {
+          return null;
+        }
+
+        const storedIndex = selectedCandidateIndexes.get(view.key);
+        if (choices.some((choice) => choice.index === storedIndex)) {
+          return choices.find((choice) => choice.index === storedIndex) || choices[0];
+        }
+
+        const defaultIndex = view.defaultCandidateIndex;
+        if (choices.some((choice) => choice.index === defaultIndex)) {
+          return choices.find((choice) => choice.index === defaultIndex) || choices[0];
+        }
+
+        return choices[0];
+      }
+
+      function renderCandidatePicker(view, selectedChoice) {
+        const choices = normalizeCandidateChoices(view);
+        candidatePickerGrid.innerHTML = "";
+        candidatePicker.hidden = choices.length < 2;
+        if (choices.length < 2) {
+          return;
+        }
+
+        for (const choice of choices) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "candidate-option";
+          button.setAttribute(
+            "aria-pressed",
+            selectedChoice && choice.index === selectedChoice.index ? "true" : "false"
+          );
+          if (choice.score?.tone) {
+            button.dataset.tone = choice.score.tone;
+          }
+          button.addEventListener("click", () => {
+            selectedCandidateIndexes.set(view.key, choice.index);
+            if (currentSession) {
+              render(currentSession);
+            }
+          });
+
+          const labelRow = document.createElement("div");
+          labelRow.className = "candidate-option-label";
+
+          const label = document.createElement("strong");
+          label.textContent = choice.label;
+
+          const statusLabel = document.createElement("span");
+          statusLabel.className = "candidate-option-status";
+          statusLabel.textContent = choice.status;
+
+          const scoreSummary = document.createElement("div");
+          scoreSummary.className = "candidate-option-score";
+          scoreSummary.textContent = choice.score ? choice.score.summary : "No rubric score yet";
+
+          const detail = document.createElement("div");
+          detail.className = "candidate-option-detail";
+          detail.textContent = choice.score ? choice.score.detail : "Waiting for rubric votes.";
+
+          labelRow.appendChild(label);
+          labelRow.appendChild(statusLabel);
+          button.appendChild(labelRow);
+          button.appendChild(scoreSummary);
+          button.appendChild(detail);
+          candidatePickerGrid.appendChild(button);
+        }
+      }
+
+      function renderCandidateScore(choice) {
+        if (!choice || !choice.score) {
+          candidateScore.hidden = true;
+          candidateScoreSummary.textContent = "";
+          candidateScoreDetail.textContent = "";
+          candidateRationales.hidden = true;
+          candidateRationalesList.innerHTML = "";
+          return;
+        }
+
+        candidateScore.hidden = false;
+        candidateScoreSummary.textContent = choice.score.summary;
+        candidateScoreDetail.textContent = choice.score.detail;
+        candidateRationalesList.innerHTML = "";
+        if (!Array.isArray(choice.rationales) || choice.rationales.length === 0) {
+          candidateRationales.hidden = true;
+          return;
+        }
+
+        candidateRationales.hidden = false;
+        for (const rationale of choice.rationales) {
+          const item = document.createElement("li");
+          item.textContent = rationale;
+          candidateRationalesList.appendChild(item);
+        }
       }
 
       function clearSkillDiff(title) {
@@ -2929,7 +3228,8 @@ export class LocalHumanReviewService implements HumanReviewService {
         renderSkillDiff(view?.skillDiff || null, diffTitle);
 
         const incumbentView = view?.incumbent || null;
-        const candidateView = view?.candidate || null;
+        const selectedCandidateChoice = getSelectedCandidateChoice(view);
+        const candidateView = selectedCandidateChoice || view?.candidate || null;
         const canPreview =
           Boolean(incumbentView?.url) &&
           Boolean(candidateView?.url);
@@ -2946,6 +3246,8 @@ export class LocalHumanReviewService implements HumanReviewService {
         candidateLabel.textContent = candidateView.label || "Candidate";
         incumbentPath.textContent = incumbentView.path || "";
         candidatePath.textContent = candidateView.path || "";
+        renderCandidateScore(selectedCandidateChoice);
+        renderCandidatePicker(view, selectedCandidateChoice);
         resetPreviewFrame(previewFrames[0]);
         resetPreviewFrame(previewFrames[1]);
         setPreviewVisibility(true);
@@ -2955,23 +3257,48 @@ export class LocalHumanReviewService implements HumanReviewService {
         setOpenLink(openCandidate, candidateView.url);
         setVotingEnabled(Boolean(view?.canVote));
         setVoteVisibility(Boolean(view?.canVote));
+        const selectedComparisonWinner =
+          selectedCandidateChoice?.score &&
+          typeof selectedCandidateChoice.score.isWinner === "boolean"
+            ? selectedCandidateChoice.score.isWinner
+            : null;
         setPanelBadge(
           incumbentBadge,
           view?.outcome === "current"
             ? ""
-            : incumbentView.isWinner
+            : selectedComparisonWinner !== null
+              ? selectedComparisonWinner
+                ? "Lost"
+                : "Won"
+              : incumbentView.isWinner
               ? "Won"
               : "Lost",
-          incumbentView.isWinner ? "winner" : "loser"
+          selectedComparisonWinner !== null
+            ? selectedComparisonWinner
+              ? "loser"
+              : "winner"
+            : incumbentView.isWinner
+              ? "winner"
+              : "loser"
         );
         setPanelBadge(
           candidateBadge,
           view?.outcome === "current"
             ? ""
-            : candidateView.isWinner
+            : selectedComparisonWinner !== null
+              ? selectedComparisonWinner
+                ? "Won"
+                : "Lost"
+              : candidateView.isWinner
               ? "Won"
               : "Lost",
-          candidateView.isWinner ? "winner" : "loser"
+          selectedComparisonWinner !== null
+            ? selectedComparisonWinner
+              ? "winner"
+              : "loser"
+            : candidateView.isWinner
+              ? "winner"
+              : "loser"
         );
         setStatusText(view?.statusText || "");
       }
@@ -2987,9 +3314,16 @@ export class LocalHumanReviewService implements HumanReviewService {
         for (const candidate of session.candidates) {
           const item = document.createElement("li");
           item.className = "queue-item";
-          item.innerHTML =
-            "<span>Candidate " + candidate.index + " \u00B7 " + candidate.status + "</span>" +
-            "<span>" + candidate.completedVotes + " / " + candidate.totalVotes + " votes</span>";
+          const label = document.createElement("span");
+          label.textContent = "Candidate " + candidate.index + " \u00B7 " + candidate.status;
+
+          const detail = document.createElement("span");
+          detail.textContent = candidate.score
+            ? candidate.score.summary
+            : candidate.completedVotes + " / " + candidate.totalVotes + " votes";
+
+          item.appendChild(label);
+          item.appendChild(detail);
           queueList.appendChild(item);
         }
 

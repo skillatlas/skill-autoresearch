@@ -6,10 +6,15 @@ import { execa, execaCommand } from "execa";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import path from "node:path";
+import { Readable } from "node:stream";
 
 import { formatCommandFailure } from "./error-format.js";
 import { Logger } from "./logger.js";
 import { interpolateRubricVariables, loadRubric } from "./rubric.js";
+import {
+  buildSkillDiffFromDirectories,
+  formatSkillDiffForText
+} from "./skill-diff.js";
 import {
   ActiveCandidate,
   CandidateComparison,
@@ -23,6 +28,7 @@ import {
   scoreVoteJsonSchema,
   scoreVoteSchema
 } from "../types/rubric.js";
+import { GenerationProvider } from "../types/generation.js";
 
 function averageConfidence(votes: ReadonlyArray<ScoreVote | VoteRecord>): number {
   if (votes.length === 0) {
@@ -219,6 +225,35 @@ function parseJsonLineStream(source: string, rawOutput: string): unknown[] {
         );
       }
     });
+}
+
+function streamTextLines(
+  stream: Readable,
+  onLine: (line: string) => void
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let buffered = "";
+
+    stream.setEncoding("utf8");
+    stream.on("data", (chunk: string) => {
+      buffered += chunk;
+
+      let newlineIndex = buffered.indexOf("\n");
+      while (newlineIndex !== -1) {
+        const line = buffered.slice(0, newlineIndex).replace(/\r$/, "");
+        onLine(line);
+        buffered = buffered.slice(newlineIndex + 1);
+        newlineIndex = buffered.indexOf("\n");
+      }
+    });
+    stream.on("end", () => {
+      if (buffered.length > 0) {
+        onLine(buffered.replace(/\r$/, ""));
+      }
+      resolve();
+    });
+    stream.on("error", reject);
+  });
 }
 
 function extractClaudeStructuredOutput(streamEvents: unknown[]): unknown {
@@ -611,26 +646,36 @@ export interface VoteJudge {
     rubricPrompt: string;
     incumbentEvidence: EvidenceItem[];
     candidateEvidence: EvidenceItem[];
+    comparisonEvidence?: EvidenceItem[];
   }): Promise<ScoreVote>;
 }
 
 export interface ScoringService {
-  loadRubric(rubricPath: string): Promise<NormalizedRubric>;
+  loadRubric(
+    rubricPath: string,
+    options?: { providerOverride?: GenerationProvider }
+  ): Promise<NormalizedRubric>;
   collectEvidence(rubric: NormalizedRubric, stepPath: string): Promise<EvidenceItem[]>;
+  collectSkillDiffEvidence(
+    baseStepPath: string,
+    currentStepPath: string
+  ): Promise<EvidenceItem[]>;
   runSingleVote(input: {
     provider: ScoringProvider;
     modelId?: string;
     rubricPrompt: string;
     incumbentEvidence: EvidenceItem[];
     candidateEvidence: EvidenceItem[];
+    comparisonEvidence?: EvidenceItem[];
   }): Promise<ScoreVote>;
 }
 
 function collectImagePaths(
   incumbentEvidence: EvidenceItem[],
-  candidateEvidence: EvidenceItem[]
+  candidateEvidence: EvidenceItem[],
+  comparisonEvidence: EvidenceItem[] = []
 ): string[] {
-  return [...incumbentEvidence, ...candidateEvidence].flatMap((item) =>
+  return [...incumbentEvidence, ...candidateEvidence, ...comparisonEvidence].flatMap((item) =>
     item.outputType === "image" ? [item.path] : []
   );
 }
@@ -672,6 +717,7 @@ function buildCliJudgePrompt(input: {
   rubricPrompt: string;
   incumbentEvidence: EvidenceItem[];
   candidateEvidence: EvidenceItem[];
+  comparisonEvidence?: EvidenceItem[];
 }, imageMode: "attachment" | "path"): string {
   const sections = [
     "You are scoring two candidates against a rubric.",
@@ -700,10 +746,21 @@ function buildCliJudgePrompt(input: {
   );
 
   sections.push(...candidateAEvidence.lines, ...candidateBEvidence.lines);
+  if ((input.comparisonEvidence?.length ?? 0) > 0) {
+    const comparisonEvidence = formatCliJudgeEvidenceBlock(
+      "Comparison",
+      input.comparisonEvidence ?? [],
+      nextImageIndex,
+      imageMode
+    );
+    sections.push(...comparisonEvidence.lines);
+    nextImageIndex = comparisonEvidence.nextImageIndex;
+  }
 
   const hasImages =
     input.incumbentEvidence.some((item) => item.outputType === "image") ||
-    input.candidateEvidence.some((item) => item.outputType === "image");
+    input.candidateEvidence.some((item) => item.outputType === "image") ||
+    (input.comparisonEvidence ?? []).some((item) => item.outputType === "image");
   if (hasImages) {
     sections.push(
       imageMode === "attachment"
@@ -735,6 +792,7 @@ export class OpenRouterVoteJudge implements VoteJudge {
     rubricPrompt: string;
     incumbentEvidence: EvidenceItem[];
     candidateEvidence: EvidenceItem[];
+    comparisonEvidence?: EvidenceItem[];
   }): Promise<ScoreVote> {
     if (input.modelId === undefined) {
       throw new Error("OpenRouter scoring requires a rubric or CLI model override.");
@@ -744,6 +802,12 @@ export class OpenRouterVoteJudge implements VoteJudge {
       this.buildEvidenceMessage("Candidate A", input.incumbentEvidence),
       this.buildEvidenceMessage("Candidate B", input.candidateEvidence)
     ];
+    const comparisonMessage = this.buildComparisonEvidenceMessage(
+      input.comparisonEvidence ?? []
+    );
+    if (comparisonMessage) {
+      messages.push(comparisonMessage);
+    }
     const requestPayload = this.buildDebugRequestPayload(input, messages);
     this.logDebugInput(requestPayload);
 
@@ -837,6 +901,7 @@ export class OpenRouterVoteJudge implements VoteJudge {
       rubricPrompt: string;
       incumbentEvidence: EvidenceItem[];
       candidateEvidence: EvidenceItem[];
+      comparisonEvidence?: EvidenceItem[];
     },
     messages: Array<
       | { role: "user"; content: string }
@@ -855,7 +920,8 @@ export class OpenRouterVoteJudge implements VoteJudge {
       system: input.rubricPrompt,
       messages: serializeOpenRouterMessages(messages),
       incumbentEvidence: serializeEvidenceForDebug(input.incumbentEvidence),
-      candidateEvidence: serializeEvidenceForDebug(input.candidateEvidence)
+      candidateEvidence: serializeEvidenceForDebug(input.candidateEvidence),
+      comparisonEvidence: serializeEvidenceForDebug(input.comparisonEvidence ?? [])
     };
   }
 
@@ -874,6 +940,7 @@ export class OpenRouterVoteJudge implements VoteJudge {
     }>;
     incumbentEvidence: ReturnType<typeof serializeEvidenceForDebug>;
     candidateEvidence: ReturnType<typeof serializeEvidenceForDebug>;
+    comparisonEvidence: ReturnType<typeof serializeEvidenceForDebug>;
   }): void {
     if (!isDebugScoreEnabled()) {
       return;
@@ -893,6 +960,57 @@ export class OpenRouterVoteJudge implements VoteJudge {
       provider: "openrouter",
       payload
     });
+  }
+
+  private buildComparisonEvidenceMessage(evidence: EvidenceItem[]) {
+    if (evidence.length === 0) {
+      return undefined;
+    }
+
+    if (evidence.every((item) => item.outputType === "text")) {
+      const textBody = evidence
+        .map((item, index) => `Evidence ${index + 1} (${item.label}):\n${item.content}`)
+        .join("\n\n");
+
+      return {
+        role: "user" as const,
+        content: `Comparison evidence:\n\n${textBody}`
+      };
+    }
+
+    const content: Array<
+      | { type: "text"; text: string }
+      | { type: "image"; image: Buffer }
+    > = [
+      {
+        type: "text",
+        text: "Comparison evidence."
+      }
+    ];
+
+    for (const [index, item] of evidence.entries()) {
+      if (item.outputType === "text") {
+        content.push({
+          type: "text",
+          text: `Evidence ${index + 1} (${item.label}):\n${item.content}`
+        });
+        continue;
+      }
+
+      content.push({
+        type: "text",
+        text: `Evidence ${index + 1} (${item.label})`
+      });
+      content.push({
+        type: "image",
+        image: item.bytes
+      });
+    }
+
+    return {
+      role: "user" as const,
+      content
+    };
   }
 }
 
@@ -914,6 +1032,7 @@ export class CodexVoteJudge implements VoteJudge {
     rubricPrompt: string;
     incumbentEvidence: EvidenceItem[];
     candidateEvidence: EvidenceItem[];
+    comparisonEvidence?: EvidenceItem[];
   }): Promise<ScoreVote> {
     await fs.ensureDir(this.runtimeDir);
     await this.ensureSchemaFile();
@@ -922,7 +1041,11 @@ export class CodexVoteJudge implements VoteJudge {
       this.runtimeDir,
       `vote-${Date.now()}-${Math.random().toString(16).slice(2)}.json`
     );
-    const imagePaths = collectImagePaths(input.incumbentEvidence, input.candidateEvidence);
+    const imagePaths = collectImagePaths(
+      input.incumbentEvidence,
+      input.candidateEvidence,
+      input.comparisonEvidence
+    );
     const prompt = this.buildPrompt(input);
     const args = [
       "exec",
@@ -934,7 +1057,6 @@ export class CodexVoteJudge implements VoteJudge {
       "--json",
       "-o",
       outputPath,
-      ...imagePaths.flatMap((imagePath) => ["--image", imagePath]),
       prompt
     ];
     if (input.modelId) {
@@ -951,11 +1073,17 @@ export class CodexVoteJudge implements VoteJudge {
     }
 
     try {
-      const result = await execa("codex", args, {
+      const subprocess = execa("codex", args, {
         cwd: this.workspaceRoot,
         all: true,
         reject: false
       });
+      const streamedDebugOutput =
+        isDebugScoreEnabled() && subprocess.stdout
+          ? streamTextLines(subprocess.stdout, (line) => this.logDebugEventLine(line))
+          : undefined;
+      const result = await subprocess;
+      await streamedDebugOutput;
 
       if (this.verbose && result.all?.trim()) {
         this.logger.debug(result.all);
@@ -1023,8 +1151,9 @@ export class CodexVoteJudge implements VoteJudge {
     rubricPrompt: string;
     incumbentEvidence: EvidenceItem[];
     candidateEvidence: EvidenceItem[];
+    comparisonEvidence?: EvidenceItem[];
   }): string {
-    return buildCliJudgePrompt(input, "attachment");
+    return buildCliJudgePrompt(input, "path");
   }
 
   private buildDebugRequestPayload(
@@ -1033,6 +1162,7 @@ export class CodexVoteJudge implements VoteJudge {
       rubricPrompt: string;
       incumbentEvidence: EvidenceItem[];
       candidateEvidence: EvidenceItem[];
+      comparisonEvidence?: EvidenceItem[];
     },
     prompt: string,
     imagePaths: string[],
@@ -1045,7 +1175,8 @@ export class CodexVoteJudge implements VoteJudge {
       prompt,
       imagePaths,
       incumbentEvidence: serializeEvidenceForDebug(input.incumbentEvidence),
-      candidateEvidence: serializeEvidenceForDebug(input.candidateEvidence)
+      candidateEvidence: serializeEvidenceForDebug(input.candidateEvidence),
+      comparisonEvidence: serializeEvidenceForDebug(input.comparisonEvidence ?? [])
     };
   }
 
@@ -1057,6 +1188,7 @@ export class CodexVoteJudge implements VoteJudge {
     imagePaths: string[];
     incumbentEvidence: ReturnType<typeof serializeEvidenceForDebug>;
     candidateEvidence: ReturnType<typeof serializeEvidenceForDebug>;
+    comparisonEvidence: ReturnType<typeof serializeEvidenceForDebug>;
   }): void {
     if (!isDebugScoreEnabled()) {
       return;
@@ -1065,6 +1197,18 @@ export class CodexVoteJudge implements VoteJudge {
     this.logger.info(
       `[score-debug] Codex scoring input:\n${JSON.stringify(payload, null, 2)}`,
       payload,
+      "score-debug"
+    );
+  }
+
+  private logDebugEventLine(line: string): void {
+    if (!isDebugScoreEnabled()) {
+      return;
+    }
+
+    this.logger.info(
+      `[score-debug] Codex scoring event: ${line}`,
+      { provider: "codex", line },
       "score-debug"
     );
   }
@@ -1091,8 +1235,13 @@ export class ClaudeVoteJudge implements VoteJudge {
     rubricPrompt: string;
     incumbentEvidence: EvidenceItem[];
     candidateEvidence: EvidenceItem[];
+    comparisonEvidence?: EvidenceItem[];
   }): Promise<ScoreVote> {
-    const imagePaths = collectImagePaths(input.incumbentEvidence, input.candidateEvidence);
+    const imagePaths = collectImagePaths(
+      input.incumbentEvidence,
+      input.candidateEvidence,
+      input.comparisonEvidence
+    );
     const prompt = this.buildPrompt(input);
     const args = [
       "-p",
@@ -1178,6 +1327,7 @@ export class ClaudeVoteJudge implements VoteJudge {
     rubricPrompt: string;
     incumbentEvidence: EvidenceItem[];
     candidateEvidence: EvidenceItem[];
+    comparisonEvidence?: EvidenceItem[];
   }): string {
     return buildCliJudgePrompt(input, "path");
   }
@@ -1188,6 +1338,7 @@ export class ClaudeVoteJudge implements VoteJudge {
       rubricPrompt: string;
       incumbentEvidence: EvidenceItem[];
       candidateEvidence: EvidenceItem[];
+      comparisonEvidence?: EvidenceItem[];
     },
     prompt: string,
     imagePaths: string[],
@@ -1200,7 +1351,8 @@ export class ClaudeVoteJudge implements VoteJudge {
       prompt,
       imagePaths,
       incumbentEvidence: serializeEvidenceForDebug(input.incumbentEvidence),
-      candidateEvidence: serializeEvidenceForDebug(input.candidateEvidence)
+      candidateEvidence: serializeEvidenceForDebug(input.candidateEvidence),
+      comparisonEvidence: serializeEvidenceForDebug(input.comparisonEvidence ?? [])
     };
   }
 
@@ -1212,6 +1364,7 @@ export class ClaudeVoteJudge implements VoteJudge {
     imagePaths: string[];
     incumbentEvidence: ReturnType<typeof serializeEvidenceForDebug>;
     candidateEvidence: ReturnType<typeof serializeEvidenceForDebug>;
+    comparisonEvidence: ReturnType<typeof serializeEvidenceForDebug>;
   }): void {
     if (!isDebugScoreEnabled()) {
       return;
@@ -1244,8 +1397,11 @@ export class Scorer {
     private readonly verbose: boolean
   ) {}
 
-  public async loadRubric(rubricPath: string): Promise<NormalizedRubric> {
-    return loadRubric(rubricPath);
+  public async loadRubric(
+    rubricPath: string,
+    options?: { providerOverride?: GenerationProvider }
+  ): Promise<NormalizedRubric> {
+    return loadRubric(rubricPath, options);
   }
 
   public async collectEvidence(
@@ -1317,6 +1473,38 @@ export class Scorer {
     }
   }
 
+  public async collectSkillDiffEvidence(
+    baseStepPath: string,
+    currentStepPath: string
+  ): Promise<EvidenceItem[]> {
+    const baseSkillsPath = path.resolve(this.workspaceRoot, baseStepPath, "skills");
+    const currentSkillsPath = path.resolve(this.workspaceRoot, currentStepPath, "skills");
+
+    if (!(await fs.pathExists(baseSkillsPath)) || !(await fs.pathExists(currentSkillsPath))) {
+      return [];
+    }
+
+    const skillDiff = buildSkillDiffFromDirectories({
+      basePath: baseSkillsPath,
+      baseLabel: "Candidate A skills",
+      currentPath: currentSkillsPath,
+      currentLabel: "Candidate B skills",
+      compareTarget: "previous",
+      label: "candidate comparison"
+    });
+
+    return [
+      {
+        outputType: "text",
+        label: "skill-diff",
+        content:
+          skillDiff === null
+            ? "Skill diff\nNo skill changes detected between Candidate A skills and Candidate B skills."
+            : formatSkillDiffForText(skillDiff)
+      }
+    ];
+  }
+
   public async runVoteSeries(input: {
     provider: ScoringProvider;
     modelId?: string;
@@ -1356,6 +1544,7 @@ export class Scorer {
     rubricPrompt: string;
     incumbentEvidence: EvidenceItem[];
     candidateEvidence: EvidenceItem[];
+    comparisonEvidence?: EvidenceItem[];
   }): Promise<ScoreVote> {
     return this.getJudge(input.provider).generateVote(input);
   }

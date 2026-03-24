@@ -1,5 +1,5 @@
 ---
-provider: codex
+provider: claude
 ---
 
 Build a portfolio-style landing page for a fictional creative studio called "Atelier Scope". The page must include:

@@ -2,10 +2,15 @@ import fs from "fs-extra";
 import os from "node:os";
 import path from "node:path";
 
+import { loadInstructions } from "./instructions.js";
 import { Logger } from "./logger.js";
 import { loadGenerations } from "./generation.js";
 import { ScoringMode } from "../types/state.js";
-import { GenerationSpec } from "../types/generation.js";
+import {
+  GenerationProvider,
+  GenerationSpec
+} from "../types/generation.js";
+import { InstructionsSpec } from "../types/instructions.js";
 
 export interface WorkspacePaths {
   root: string;
@@ -202,17 +207,23 @@ export class WorkspaceManager {
     );
   }
 
-  public async readPrompt(promptPath: string): Promise<string> {
-    return fs.readFile(promptPath, "utf8");
-  }
-
-  public async loadGenerationSpec(): Promise<GenerationSpec> {
-    const generations = await this.loadGenerationSpecs();
+  public async loadGenerationSpec(options?: {
+    providerOverride?: GenerationProvider;
+  }): Promise<GenerationSpec> {
+    const generations = await this.loadGenerationSpecs(options);
     return generations[0]!;
   }
 
-  public async loadGenerationSpecs(): Promise<GenerationSpec[]> {
-    return loadGenerations(this.root);
+  public async loadInstructionsSpec(options?: {
+    providerOverride?: GenerationProvider;
+  }): Promise<InstructionsSpec> {
+    return loadInstructions(this.paths.instructionsPath, options);
+  }
+
+  public async loadGenerationSpecs(options?: {
+    providerOverride?: GenerationProvider;
+  }): Promise<GenerationSpec[]> {
+    return loadGenerations(this.root, options);
   }
 
   private async createSandboxSkillLinks(

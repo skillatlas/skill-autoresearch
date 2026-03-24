@@ -4,6 +4,7 @@ import path from "node:path";
 import { z } from "zod";
 
 import { inferLocalAgent } from "./local-agent-inference.js";
+import { GenerationProvider } from "../types/generation.js";
 import {
   NormalizedRubric,
   normalizedRubricSchema,
@@ -120,13 +121,18 @@ export function interpolateRubricVariables(
   return output;
 }
 
-export async function loadRubric(rubricPath: string): Promise<NormalizedRubric> {
+export async function loadRubric(
+  rubricPath: string,
+  options?: { providerOverride?: GenerationProvider }
+): Promise<NormalizedRubric> {
   const rawRubric = await fs.readFile(rubricPath, "utf8");
   const parsed = matter(rawRubric);
   const frontmatter = rawRubricFrontmatterSchema.parse(parsed.data);
   const prompt = parsed.content.trim();
   const provider =
-    frontmatter.provider ?? (await inferLocalAgent(path.dirname(rubricPath)));
+    options?.providerOverride ??
+    frontmatter.provider ??
+    (await inferLocalAgent(path.dirname(rubricPath)));
 
   if (provider === "openrouter" && frontmatter.model === undefined) {
     throw new Error(

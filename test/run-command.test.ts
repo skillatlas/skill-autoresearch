@@ -125,4 +125,52 @@ describe("run command workspace resolution", () => {
       })
     ).toThrow(InvalidArgumentError);
   });
+
+  it("keeps an explicit provider override", () => {
+    expect(
+      normalizeRunCliOptions({
+        candidates: 3,
+        votes: 3,
+        minSteps: 0,
+        maxSteps: 20,
+        resume: false,
+        dryRun: false,
+        verbose: false,
+        provider: "codex",
+        scoringMode: "rubric"
+      }).provider
+    ).toBe("codex");
+  });
+
+  it("defaults skill diff evidence to enabled", () => {
+    expect(
+      normalizeRunCliOptions({
+        candidates: 3,
+        votes: 3,
+        minSteps: 0,
+        maxSteps: 20,
+        resume: false,
+        dryRun: false,
+        verbose: false,
+        scoringMode: "rubric"
+      }).omitSkillDiff
+    ).toBe(false);
+  });
+
+  it("parses --omit-skill-diff", async () => {
+    const command = buildRunCommand();
+    let parsedOptions:
+      | ReturnType<typeof normalizeRunCliOptions>
+      | undefined;
+
+    command.action((_workspaceArg, rawOptions) => {
+      parsedOptions = normalizeRunCliOptions(rawOptions);
+    });
+
+    await command.parseAsync(["node", "script", "--omit-skill-diff"], {
+      from: "node"
+    });
+
+    expect(parsedOptions?.omitSkillDiff).toBe(true);
+  });
 });

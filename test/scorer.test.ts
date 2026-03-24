@@ -219,6 +219,109 @@ describe("scoring helpers", () => {
     });
   });
 
+  it("collects skill diff evidence between two artifact directories", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "scorer-"));
+    const incumbentSkillPath = path.join(
+      workspaceRoot,
+      "incumbent",
+      "skills",
+      "demo",
+      "SKILL.md"
+    );
+    const candidateSkillPath = path.join(
+      workspaceRoot,
+      "candidate",
+      "skills",
+      "demo",
+      "SKILL.md"
+    );
+    await fs.ensureDir(path.dirname(incumbentSkillPath));
+    await fs.ensureDir(path.dirname(candidateSkillPath));
+    await fs.writeFile(
+      incumbentSkillPath,
+      "# Demo\n\n- Shared line\n- Old line\n",
+      "utf8"
+    );
+    await fs.writeFile(
+      candidateSkillPath,
+      "# Demo\n\n- Shared line\n- New line\n",
+      "utf8"
+    );
+
+    const scorer = new Scorer(
+      workspaceRoot,
+      new Logger(false),
+      {
+        openrouter: { async generateVote() { throw new Error("unused"); } },
+        codex: { async generateVote() { throw new Error("unused"); } },
+        claude: { async generateVote() { throw new Error("unused"); } }
+      },
+      false
+    );
+
+    const evidence = await scorer.collectSkillDiffEvidence("incumbent", "candidate");
+
+    expect(evidence).toEqual([
+      {
+        outputType: "text",
+        label: "skill-diff",
+        content: expect.stringContaining("File: demo/SKILL.md (modified, +1/-1)")
+      }
+    ]);
+    expect(evidence[0]).toMatchObject({
+      outputType: "text",
+      label: "skill-diff"
+    });
+    if (evidence[0]?.outputType === "text") {
+      expect(evidence[0].content).toContain("- Old line");
+      expect(evidence[0].content).toContain("+ - New line");
+    }
+  });
+
+  it("reports when no skill changes were detected", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "scorer-"));
+    const incumbentSkillPath = path.join(
+      workspaceRoot,
+      "incumbent",
+      "skills",
+      "demo",
+      "SKILL.md"
+    );
+    const candidateSkillPath = path.join(
+      workspaceRoot,
+      "candidate",
+      "skills",
+      "demo",
+      "SKILL.md"
+    );
+    await fs.ensureDir(path.dirname(incumbentSkillPath));
+    await fs.ensureDir(path.dirname(candidateSkillPath));
+    await fs.writeFile(incumbentSkillPath, "# Demo\n", "utf8");
+    await fs.writeFile(candidateSkillPath, "# Demo\n", "utf8");
+
+    const scorer = new Scorer(
+      workspaceRoot,
+      new Logger(false),
+      {
+        openrouter: { async generateVote() { throw new Error("unused"); } },
+        codex: { async generateVote() { throw new Error("unused"); } },
+        claude: { async generateVote() { throw new Error("unused"); } }
+      },
+      false
+    );
+
+    const evidence = await scorer.collectSkillDiffEvidence("incumbent", "candidate");
+
+    expect(evidence).toEqual([
+      {
+        outputType: "text",
+        label: "skill-diff",
+        content:
+          "Skill diff\nNo skill changes detected between Candidate A skills and Candidate B skills."
+      }
+    ]);
+  });
+
   it("falls back to direct artifact inspection for local scorers without result paths", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "scorer-"));
     await fs.ensureDir(path.join(workspaceRoot, "step"));
@@ -901,7 +1004,7 @@ if (command === "close") {
     }
   });
 
-  it("builds a mixed Codex prompt with stable image ordering", async () => {
+  it("builds a mixed Codex prompt with stable image paths", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "codex-"));
     const prompt = (new CodexVoteJudge(workspaceRoot, new Logger(false), false) as any)
       .buildPrompt({
@@ -938,10 +1041,16 @@ if (command === "close") {
 
     expect(prompt).toContain("Evidence 1 (markup) [text]:");
     expect(prompt).toContain("<main>A</main>");
-    expect(prompt).toContain("Evidence 2 (hero) [image attachment 1]: a.png");
-    expect(prompt).toContain("Evidence 1 (hero) [image attachment 2]: b.png");
+    expect(prompt).toContain(
+      `Evidence 2 (hero) [image path]: ${path.join(workspaceRoot, "a.png")}`
+    );
+    expect(prompt).toContain(
+      `Evidence 1 (hero) [image path]: ${path.join(workspaceRoot, "b.png")}`
+    );
     expect(prompt).toContain("Evidence 2 (markup) [text]:");
-    expect(prompt).toContain("Image attachments are provided in the numbered order above.");
+    expect(prompt).toContain(
+      "Use the image paths above as direct image inputs when judging the candidates."
+    );
   });
 
   it("logs the Codex scoring input when DEBUG_SCORE=1", async () => {
@@ -976,7 +1085,7 @@ if (command === "close") {
         },
         "Prompt text",
         [path.join(workspaceRoot, "b.png")],
-        ["exec", "--image", path.join(workspaceRoot, "b.png"), "Prompt text"]
+        ["exec", "Prompt text"]
       );
       judge.logDebugInput(payload);
 
@@ -986,6 +1095,108 @@ if (command === "close") {
       expect(message).toContain('"provider": "codex"');
       expect(message).toContain('"prompt": "Prompt text"');
     } finally {
+      if (previousDebugScore === undefined) {
+        delete process.env.DEBUG_SCORE;
+      } else {
+        process.env.DEBUG_SCORE = previousDebugScore;
+      }
+      infoSpy.mockRestore();
+    }
+  });
+
+  it("logs Codex JSON events in real time when DEBUG_SCORE=1", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "codex-score-debug-"));
+    const fakeBinDir = path.join(workspaceRoot, "bin");
+    await fs.ensureDir(fakeBinDir);
+    await fs.writeFile(
+      path.join(fakeBinDir, "codex"),
+      `#!/usr/bin/env node
+import fs from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
+
+const args = process.argv.slice(2);
+const outputPathIndex = args.indexOf("-o");
+if (outputPathIndex === -1 || !args[outputPathIndex + 1]) {
+  process.exit(2);
+}
+
+process.stdout.write(JSON.stringify({
+  type: "thread.started",
+  thread_id: "thread_live"
+}) + "\\n");
+await delay(10);
+process.stdout.write(JSON.stringify({
+  type: "item.completed",
+  item: {
+    id: "item_live",
+    type: "agent_message",
+    text: "Still working."
+  }
+}) + "\\n");
+
+fs.writeFileSync(
+  args[outputPathIndex + 1],
+  JSON.stringify({
+    winner: "B",
+    confidence: 0.8,
+    rationale: "Candidate B is stronger."
+  })
+);
+`,
+      "utf8"
+    );
+    await fs.chmod(path.join(fakeBinDir, "codex"), 0o755);
+
+    const logger = new Logger(false);
+    const infoSpy = vi.spyOn(logger, "info").mockImplementation(() => undefined);
+    const previousPath = process.env.PATH;
+    const previousDebugScore = process.env.DEBUG_SCORE;
+    process.env.PATH = `${fakeBinDir}${path.delimiter}${previousPath ?? ""}`;
+    process.env.DEBUG_SCORE = "1";
+
+    try {
+      const vote = await new CodexVoteJudge(workspaceRoot, logger, false).generateVote({
+        modelId: "gpt-5",
+        rubricPrompt: "Pick the stronger candidate.",
+        incumbentEvidence: [
+          {
+            outputType: "text",
+            label: "markup",
+            content: "<main>A</main>"
+          }
+        ],
+        candidateEvidence: [
+          {
+            outputType: "image",
+            label: "hero",
+            path: path.join(workspaceRoot, "b.png"),
+            mimeType: "image/png",
+            bytes: Buffer.from("b")
+          }
+        ]
+      });
+
+      expect(vote).toEqual({
+        winner: "B",
+        confidence: 0.8,
+        rationale: "Candidate B is stronger."
+      });
+
+      const messages = infoSpy.mock.calls.map(([message]) => message);
+      expect(
+        messages.some((message) =>
+          message.includes('[score-debug] Codex scoring event: {"type":"thread.started","thread_id":"thread_live"}')
+        )
+      ).toBe(true);
+      expect(
+        messages.some((message) =>
+          message.includes(
+            '[score-debug] Codex scoring event: {"type":"item.completed","item":{"id":"item_live","type":"agent_message","text":"Still working."}}'
+          )
+        )
+      ).toBe(true);
+    } finally {
+      process.env.PATH = previousPath;
       if (previousDebugScore === undefined) {
         delete process.env.DEBUG_SCORE;
       } else {
@@ -1089,6 +1300,10 @@ fs.writeFileSync(
       expect(logPayload.request.prompt).toContain("Pick the stronger candidate.");
       expect(logPayload.request.prompt).toContain("Evidence 1 (markup) [text]:");
       expect(logPayload.request.command).toContain("--json");
+      expect(logPayload.request.command).not.toContain("--image");
+      expect(logPayload.request.prompt).toContain(
+        `Evidence 1 (hero) [image path]: ${path.join(workspaceRoot, "b.png")}`
+      );
       expect(logPayload.response.rawOutput).toContain('"winner":"B"');
       expect(logPayload.response.rawEventOutput).toContain('"type":"thread.started"');
       expect(logPayload.response.eventStream).toEqual([
@@ -1180,6 +1395,7 @@ fs.writeFileSync(
 
       const args = await fs.readJson(argsLogPath);
       expect(args).not.toContain("--model");
+      expect(args).not.toContain("--image");
     } finally {
       process.env.PATH = previousPath;
       if (previousArgsLogPath === undefined) {

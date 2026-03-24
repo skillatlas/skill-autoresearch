@@ -62,6 +62,28 @@ Generate the artifact set.
     expect(generation.prompt).toBe("Generate the artifact set.");
   });
 
+  it("lets an override provider replace generation frontmatter", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "generation-"));
+    const generationPath = path.join(tempDir, "GENERATION.md");
+
+    await fs.writeFile(
+      generationPath,
+      `---
+provider: claude
+---
+
+Generate the artifact set.
+`,
+      "utf8"
+    );
+
+    const generation = await loadGeneration(generationPath, {
+      providerOverride: "codex"
+    });
+
+    expect(generation.provider).toBe("codex");
+  });
+
   it("rejects generation files without an inferable provider", async () => {
     await withClearedInferenceEnv(async () => {
       const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "generation-"));

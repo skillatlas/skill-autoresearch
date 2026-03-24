@@ -23,6 +23,7 @@ import {
   ScoreVote
 } from "../src/types/rubric.js";
 import { RunState } from "../src/types/state.js";
+import { GenerationProvider } from "../src/types/generation.js";
 
 const fixtureRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -183,6 +184,7 @@ export interface FakeScorerOptions {
 export class FakeScorer implements ScoringService {
   public voteCalls = 0;
   public readonly providers: ScoringProvider[] = [];
+  public readonly comparisonEvidenceCalls: EvidenceItem[][] = [];
   private failureTriggered = false;
 
   public constructor(
@@ -190,10 +192,13 @@ export class FakeScorer implements ScoringService {
     private readonly options: FakeScorerOptions = {}
   ) {}
 
-  public async loadRubric(rubricPath: string): Promise<NormalizedRubric> {
+  public async loadRubric(
+    rubricPath: string,
+    options?: { providerOverride?: GenerationProvider }
+  ): Promise<NormalizedRubric> {
     return {
       sourcePath: rubricPath,
-      provider: this.options.rubricProvider ?? "openrouter",
+      provider: options?.providerOverride ?? this.options.rubricProvider ?? "openrouter",
       modelId: "test-model",
       commands: [{ outputType: "text", resultPath: "$STEP_PATH/index.html" }],
       prompt: "Prefer the higher score."
@@ -215,15 +220,50 @@ export class FakeScorer implements ScoringService {
     ];
   }
 
+  public async collectSkillDiffEvidence(
+    baseStepPath: string,
+    currentStepPath: string
+  ): Promise<EvidenceItem[]> {
+    const baseSkillPath = path.resolve(
+      this.workspaceRoot,
+      baseStepPath,
+      "skills",
+      "demo",
+      "SKILL.md"
+    );
+    const currentSkillPath = path.resolve(
+      this.workspaceRoot,
+      currentStepPath,
+      "skills",
+      "demo",
+      "SKILL.md"
+    );
+    const baseSkill = await fs.readFile(baseSkillPath, "utf8");
+    const currentSkill = await fs.readFile(currentSkillPath, "utf8");
+
+    return [
+      {
+        outputType: "text",
+        label: "skill-diff",
+        content:
+          baseSkill === currentSkill
+            ? "No skill changes detected."
+            : `Skill changed from ${baseSkill.trim()} to ${currentSkill.trim()}.`
+      }
+    ];
+  }
+
   public async runSingleVote(input: {
     provider: ScoringProvider;
     modelId?: string;
     rubricPrompt: string;
     incumbentEvidence: EvidenceItem[];
     candidateEvidence: EvidenceItem[];
+    comparisonEvidence?: EvidenceItem[];
   }): Promise<ScoreVote> {
     this.voteCalls += 1;
     this.providers.push(input.provider);
+    this.comparisonEvidenceCalls.push(input.comparisonEvidence ?? []);
     if (
       this.options.failOnVoteNumber &&
       !this.failureTriggered &&
@@ -314,6 +354,7 @@ export async function runOrchestrator(input: {
       minSteps: 0,
       maxSteps: 1,
       resume: false,
+      omitSkillDiff: false,
       dryRun: false,
       ...input.options
     }

@@ -74,6 +74,7 @@ describe("LocalHumanReviewService", () => {
       archivePath: "archive/run-1",
       skillsOriginalPath: "skills-original",
       skillsPreviousPath: "skills-previous",
+      omitSkillDiff: false,
       incumbentPath,
       currentPhase: "score",
       activeCandidates: [
@@ -280,6 +281,7 @@ describe("LocalHumanReviewService", () => {
       archivePath: "archive/run-2",
       skillsOriginalPath: "skills-original",
       skillsPreviousPath: "skills-previous",
+      omitSkillDiff: false,
       incumbentPath: undefined,
       currentPhase: "mutate-skills",
       activeCandidates: [],
@@ -353,6 +355,98 @@ describe("LocalHumanReviewService", () => {
     await service.close();
   });
 
+  it("keeps candidate score summaries disabled in human scoring mode", async () => {
+    const workspaceRoot = await fs.mkdtemp(
+      path.join(os.tmpdir(), "skill-autoresearch-human-scoring-")
+    );
+    const baselinePath = path.join(workspaceRoot, "steps", "0", "baseline");
+    const candidatePath = path.join(workspaceRoot, "steps", "1", "candidates", "0");
+    await fs.ensureDir(baselinePath);
+    await fs.ensureDir(candidatePath);
+    await fs.ensureDir(path.join(workspaceRoot, "skills-original"));
+    await fs.ensureDir(path.join(workspaceRoot, "skills-previous"));
+    await fs.ensureDir(path.join(workspaceRoot, "skills"));
+    await fs.writeFile(
+      path.join(baselinePath, "index.html"),
+      "<!doctype html><html><body><main>Baseline</main></body></html>",
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(candidatePath, "index.html"),
+      "<!doctype html><html><body><main>Candidate</main></body></html>",
+      "utf8"
+    );
+
+    let openedUrlResolve: ((url: string) => void) | undefined;
+    const openedUrl = new Promise<string>((resolve) => {
+      openedUrlResolve = resolve;
+    });
+    const service = new LocalHumanReviewService(new Logger(false), {
+      async open(url: string): Promise<void> {
+        openedUrlResolve?.(url);
+      }
+    });
+
+    await service.startRun({
+      version: 1,
+      runId: "run-human-current",
+      workspaceRoot,
+      scoringMode: "human",
+      status: "running",
+      stepIndex: 1,
+      candidateCount: 1,
+      voteCount: 3,
+      minSteps: 0,
+      maxSteps: 1,
+      consecutiveRejections: 0,
+      archivePath: "archive/run-human-current",
+      skillsOriginalPath: "skills-original",
+      skillsPreviousPath: "skills-previous",
+      omitSkillDiff: false,
+      incumbentPath: path.relative(workspaceRoot, baselinePath),
+      currentPhase: "promote",
+      activeCandidates: [
+        {
+          index: 0,
+          path: path.relative(workspaceRoot, candidatePath),
+          status: "scored",
+          votes: [
+            { attempt: 0, winner: "B", confidence: 1, rationale: "Better" },
+            { attempt: 1, winner: "B", confidence: 0.8, rationale: "Still better" },
+            { attempt: 2, winner: "A", confidence: 0.6, rationale: "Closer" }
+          ],
+          comparison: {
+            aVotes: 1,
+            bVotes: 2,
+            averageConfidence: 0.8,
+            isWinner: true
+          }
+        }
+      ],
+      history: []
+    });
+
+    const baseUrl = await openedUrl;
+    const sessionResponse = await fetch(`${baseUrl}/api/session`);
+    const session = (await sessionResponse.json()) as {
+      scoringMode: string;
+      candidates: Array<{
+        index: number;
+        score: unknown;
+      }>;
+    };
+
+    expect(session.scoringMode).toBe("human");
+    expect(session.candidates).toEqual([
+      expect.objectContaining({
+        index: 0,
+        score: null
+      })
+    ]);
+
+    await service.close();
+  });
+
   it("keeps the latest rubric comparison visible after scoring completes", async () => {
     const workspaceRoot = await fs.mkdtemp(
       path.join(os.tmpdir(), "skill-autoresearch-human-scoring-")
@@ -403,6 +497,7 @@ describe("LocalHumanReviewService", () => {
       archivePath: "archive/run-rubric",
       skillsOriginalPath: "skills-original",
       skillsPreviousPath: "skills-previous",
+      omitSkillDiff: false,
       incumbentPath: path.relative(workspaceRoot, baselinePath),
       currentPhase: "generate-candidates",
       activeCandidates: [],
@@ -424,6 +519,7 @@ describe("LocalHumanReviewService", () => {
       archivePath: "archive/run-rubric",
       skillsOriginalPath: "skills-original",
       skillsPreviousPath: "skills-previous",
+      omitSkillDiff: false,
       incumbentPath: path.relative(workspaceRoot, baselinePath),
       currentPhase: "promote",
       activeCandidates: [
@@ -477,6 +573,7 @@ describe("LocalHumanReviewService", () => {
       archivePath: "archive/run-rubric",
       skillsOriginalPath: "skills-original",
       skillsPreviousPath: "skills-previous",
+      omitSkillDiff: false,
       incumbentPath: path.relative(workspaceRoot, candidatePath),
       currentPhase: "snapshot",
       activeCandidates: [],
@@ -523,6 +620,343 @@ describe("LocalHumanReviewService", () => {
     const artifactHtml = await artifactResponse.text();
     expect(artifactResponse.ok).toBe(true);
     expect(artifactHtml).toContain("Baseline");
+
+    await service.close();
+  });
+
+  it("publishes rubric candidate choices and score summaries for the current step", async () => {
+    const workspaceRoot = await fs.mkdtemp(
+      path.join(os.tmpdir(), "skill-autoresearch-human-scoring-")
+    );
+    const baselinePath = path.join(workspaceRoot, "steps", "0", "baseline");
+    const candidateZeroPath = path.join(workspaceRoot, "steps", "1", "candidates", "0");
+    const candidateOnePath = path.join(workspaceRoot, "steps", "1", "candidates", "1");
+    await fs.ensureDir(baselinePath);
+    await fs.ensureDir(candidateZeroPath);
+    await fs.ensureDir(candidateOnePath);
+    await fs.ensureDir(path.join(workspaceRoot, "skills-original"));
+    await fs.ensureDir(path.join(workspaceRoot, "skills-previous"));
+    await fs.ensureDir(path.join(workspaceRoot, "skills"));
+    await fs.writeFile(
+      path.join(baselinePath, "index.html"),
+      "<!doctype html><html><body><main>Baseline</main></body></html>",
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(candidateZeroPath, "index.html"),
+      "<!doctype html><html><body><main>Candidate zero</main></body></html>",
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(candidateOnePath, "index.html"),
+      "<!doctype html><html><body><main>Candidate one</main></body></html>",
+      "utf8"
+    );
+
+    let openedUrlResolve: ((url: string) => void) | undefined;
+    const openedUrl = new Promise<string>((resolve) => {
+      openedUrlResolve = resolve;
+    });
+    const service = new LocalHumanReviewService(new Logger(false), {
+      async open(url: string): Promise<void> {
+        openedUrlResolve?.(url);
+      }
+    });
+
+    await service.startRun({
+      version: 1,
+      runId: "run-rubric-current",
+      workspaceRoot,
+      scoringMode: "rubric",
+      status: "running",
+      stepIndex: 1,
+      candidateCount: 2,
+      voteCount: 3,
+      minSteps: 0,
+      maxSteps: 1,
+      consecutiveRejections: 0,
+      archivePath: "archive/run-rubric-current",
+      skillsOriginalPath: "skills-original",
+      skillsPreviousPath: "skills-previous",
+      omitSkillDiff: false,
+      incumbentPath: path.relative(workspaceRoot, baselinePath),
+      currentPhase: "promote",
+      activeCandidates: [
+        {
+          index: 0,
+          path: path.relative(workspaceRoot, candidateZeroPath),
+          status: "scored",
+          votes: [
+            { attempt: 0, winner: "B", confidence: 1, rationale: "Better" },
+            { attempt: 1, winner: "B", confidence: 0.8, rationale: "Still better" },
+            { attempt: 2, winner: "A", confidence: 0.6, rationale: "Closer" }
+          ],
+          comparison: {
+            aVotes: 1,
+            bVotes: 2,
+            averageConfidence: 0.8,
+            isWinner: true
+          }
+        },
+        {
+          index: 1,
+          path: path.relative(workspaceRoot, candidateOnePath),
+          status: "scored",
+          votes: [
+            { attempt: 0, winner: "A", confidence: 0.9, rationale: "Worse" },
+            { attempt: 1, winner: "B", confidence: 0.7, rationale: "Some merit" },
+            { attempt: 2, winner: "A", confidence: 0.8, rationale: "Still worse" }
+          ],
+          comparison: {
+            aVotes: 2,
+            bVotes: 1,
+            averageConfidence: 0.8,
+            isWinner: false
+          }
+        }
+      ],
+      history: []
+    });
+
+    const baseUrl = await openedUrl;
+    const sessionResponse = await fetch(`${baseUrl}/api/session`);
+    const session = (await sessionResponse.json()) as {
+      candidates: Array<{
+        index: number;
+        score: {
+          summary: string;
+          detail: string;
+          tone: string;
+        } | null;
+      }>;
+      stepViews: Array<{
+        key: string;
+        defaultCandidateIndex: number | null;
+        candidateChoices: Array<{
+          index: number;
+          url: string;
+          score: {
+            summary: string;
+            detail: string;
+            tone: string;
+          } | null;
+        }>;
+      }>;
+    };
+
+    expect(session.candidates).toEqual([
+      expect.objectContaining({
+        index: 0,
+        score: expect.objectContaining({
+          summary: "2 candidate · 1 incumbent",
+          detail: "Won · avg confidence 80%",
+          tone: "winner"
+        })
+      }),
+      expect.objectContaining({
+        index: 1,
+        score: expect.objectContaining({
+          summary: "1 candidate · 2 incumbent",
+          detail: "Lost · avg confidence 80%",
+          tone: "loser"
+        })
+      })
+    ]);
+
+    const currentView = session.stepViews[0];
+    expect(currentView.key).toBe("current");
+    expect(currentView.defaultCandidateIndex).toBe(0);
+    expect(currentView.candidateChoices).toHaveLength(2);
+    expect(currentView.candidateChoices).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          index: 0,
+          score: expect.objectContaining({
+            summary: "2 candidate · 1 incumbent",
+            tone: "winner"
+          })
+        }),
+        expect.objectContaining({
+          index: 1,
+          score: expect.objectContaining({
+            summary: "1 candidate · 2 incumbent",
+            tone: "loser"
+          })
+        })
+      ])
+    );
+
+    const secondCandidate = currentView.candidateChoices.find((choice) => choice.index === 1);
+    const secondCandidateResponse = await fetch(secondCandidate?.url ?? "");
+    expect(secondCandidateResponse.ok).toBe(true);
+    expect(await secondCandidateResponse.text()).toContain("Candidate one");
+
+    await service.close();
+  });
+
+  it("publishes rubric candidate choices and rationales for historical steps", async () => {
+    const workspaceRoot = await fs.mkdtemp(
+      path.join(os.tmpdir(), "skill-autoresearch-human-scoring-")
+    );
+    const baselinePath = path.join(workspaceRoot, "steps", "0", "baseline");
+    const candidateZeroPath = path.join(workspaceRoot, "steps", "1", "candidates", "0");
+    const candidateOnePath = path.join(workspaceRoot, "steps", "1", "candidates", "1");
+    await fs.ensureDir(baselinePath);
+    await fs.ensureDir(candidateZeroPath);
+    await fs.ensureDir(candidateOnePath);
+    await fs.ensureDir(path.join(workspaceRoot, "skills-original"));
+    await fs.ensureDir(path.join(workspaceRoot, "skills-previous"));
+    await fs.ensureDir(path.join(workspaceRoot, "skills"));
+    await fs.writeFile(
+      path.join(baselinePath, "index.html"),
+      "<!doctype html><html><body><main>Baseline</main></body></html>",
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(candidateZeroPath, "index.html"),
+      "<!doctype html><html><body><main>Candidate zero</main></body></html>",
+      "utf8"
+    );
+    await fs.writeFile(
+      path.join(candidateOnePath, "index.html"),
+      "<!doctype html><html><body><main>Candidate one</main></body></html>",
+      "utf8"
+    );
+
+    let openedUrlResolve: ((url: string) => void) | undefined;
+    const openedUrl = new Promise<string>((resolve) => {
+      openedUrlResolve = resolve;
+    });
+    const service = new LocalHumanReviewService(new Logger(false), {
+      async open(url: string): Promise<void> {
+        openedUrlResolve?.(url);
+      }
+    });
+
+    await service.startRun({
+      version: 1,
+      runId: "run-rubric-history",
+      workspaceRoot,
+      scoringMode: "rubric",
+      status: "running",
+      stepIndex: 2,
+      candidateCount: 2,
+      voteCount: 3,
+      minSteps: 0,
+      maxSteps: 2,
+      consecutiveRejections: 0,
+      archivePath: "archive/run-rubric-history",
+      skillsOriginalPath: "skills-original",
+      skillsPreviousPath: "skills-previous",
+      omitSkillDiff: false,
+      incumbentPath: path.relative(workspaceRoot, candidateZeroPath),
+      currentPhase: "snapshot",
+      activeCandidates: [],
+      history: [
+        {
+          timestamp: "2026-03-23T18:00:00.000Z",
+          stepIndex: 1,
+          accepted: true,
+          incumbentPath: path.relative(workspaceRoot, candidateZeroPath),
+          promotedCandidateIndex: 0,
+          promotedCandidatePath: path.relative(workspaceRoot, candidateZeroPath),
+          winningCandidateIndexes: [0],
+          consecutiveRejections: 0,
+          candidates: [
+            {
+              index: 0,
+              path: path.relative(workspaceRoot, candidateZeroPath),
+              status: "accepted",
+              votes: [
+                { attempt: 0, winner: "B", confidence: 1, rationale: "Clearer layout." },
+                {
+                  attempt: 1,
+                  winner: "B",
+                  confidence: 0.8,
+                  rationale: "More coherent typography."
+                }
+              ],
+              comparison: {
+                aVotes: 0,
+                bVotes: 2,
+                averageConfidence: 0.9,
+                isWinner: true
+              }
+            },
+            {
+              index: 1,
+              path: path.relative(workspaceRoot, candidateOnePath),
+              status: "rejected",
+              votes: [
+                {
+                  attempt: 0,
+                  winner: "A",
+                  confidence: 0.7,
+                  rationale: "The baseline has cleaner spacing."
+                }
+              ],
+              comparison: {
+                aVotes: 1,
+                bVotes: 0,
+                averageConfidence: 0.7,
+                isWinner: false
+              }
+            }
+          ]
+        }
+      ]
+    });
+
+    const baseUrl = await openedUrl;
+    const sessionResponse = await fetch(`${baseUrl}/api/session`);
+    const session = (await sessionResponse.json()) as {
+      stepViews: Array<{
+        key: string;
+        defaultCandidateIndex: number | null;
+        candidateChoices: Array<{
+          index: number;
+          url: string;
+          score: {
+            summary: string;
+            detail: string;
+            tone: string;
+          } | null;
+          rationales: string[];
+        }>;
+      }>;
+    };
+
+    const historicalView = session.stepViews.find((view) => view.key === "step-1");
+    expect(historicalView).toBeDefined();
+    expect(historicalView?.defaultCandidateIndex).toBe(0);
+    expect(historicalView?.candidateChoices).toHaveLength(2);
+    expect(historicalView?.candidateChoices).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          index: 0,
+          score: expect.objectContaining({
+            summary: "2 candidate · 0 incumbent",
+            detail: "Won · avg confidence 90%",
+            tone: "winner"
+          }),
+          rationales: ["Clearer layout.", "More coherent typography."]
+        }),
+        expect.objectContaining({
+          index: 1,
+          score: expect.objectContaining({
+            summary: "0 candidate · 1 incumbent",
+            detail: "Lost · avg confidence 70%",
+            tone: "loser"
+          }),
+          rationales: ["The baseline has cleaner spacing."]
+        })
+      ])
+    );
+
+    const secondCandidate = historicalView?.candidateChoices.find((choice) => choice.index === 1);
+    const secondCandidateResponse = await fetch(secondCandidate?.url ?? "");
+    expect(secondCandidateResponse.ok).toBe(true);
+    expect(await secondCandidateResponse.text()).toContain("Candidate one");
 
     await service.close();
   });
@@ -602,6 +1036,7 @@ describe("LocalHumanReviewService", () => {
       archivePath: "archive/run-3",
       skillsOriginalPath: "skills-original",
       skillsPreviousPath: "skills-previous",
+      omitSkillDiff: false,
       incumbentPath: "steps/0/baseline",
       currentPhase: "snapshot",
       activeCandidates: [],

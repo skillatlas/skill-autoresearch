@@ -15,6 +15,7 @@ import {
 } from "../core/scorer.js";
 import { StateStore } from "../core/state-store.js";
 import { WorkspaceManager } from "../core/workspace.js";
+import { GenerationProvider } from "../types/generation.js";
 import { ScoringProvider } from "../types/rubric.js";
 import { ScoringMode } from "../types/state.js";
 
@@ -43,10 +44,12 @@ export interface RunCliOptions {
   maxSteps?: number;
   stasisSteps?: number;
   resume: boolean;
+  provider?: GenerationProvider;
   model?: string;
   dryRun: boolean;
   verbose: boolean;
   scoringMode: ScoringMode;
+  omitSkillDiff: boolean;
 }
 
 interface RunCliOptionSources {
@@ -64,10 +67,21 @@ function parseScoringMode(value: string): ScoringMode {
   );
 }
 
+function parseGenerationProvider(value: string): GenerationProvider {
+  if (value === "claude" || value === "codex") {
+    return value;
+  }
+
+  throw new InvalidArgumentError(
+    `Expected provider to be "claude" or "codex", received ${value}.`
+  );
+}
+
 export function normalizeRunCliOptions(
-  options: Omit<RunCliOptions, "scoringMode" | "maxSteps"> & {
+  options: Omit<RunCliOptions, "scoringMode" | "maxSteps" | "omitSkillDiff"> & {
     maxSteps?: number | boolean;
     scoringMode?: string;
+    omitSkillDiff?: boolean;
   },
   sources: RunCliOptionSources = {}
 ): RunCliOptions {
@@ -94,7 +108,8 @@ export function normalizeRunCliOptions(
     ...options,
     maxSteps,
     votes,
-    scoringMode
+    scoringMode,
+    omitSkillDiff: options.omitSkillDiff ?? false
   };
 }
 
@@ -117,7 +132,9 @@ export async function runCommand(
   let scoringProvider: ScoringProvider | undefined;
 
   if (options.scoringMode === "rubric") {
-    const rubric = await loadRubric(workspace.paths.rubricPath);
+    const rubric = await loadRubric(workspace.paths.rubricPath, {
+      providerOverride: options.provider
+    });
     scoringProvider = rubric.provider;
   }
   loadWorkspaceEnv(workspace.paths.envPath, { scoringProvider });
@@ -130,7 +147,9 @@ export async function runCommand(
     maxSteps: options.maxSteps,
     stasisSteps: options.stasisSteps,
     resume: options.resume,
+    providerOverride: options.provider,
     modelOverride: options.model,
+    omitSkillDiff: options.omitSkillDiff,
     dryRun: options.dryRun,
     scoringMode: options.scoringMode
   };
@@ -172,7 +191,13 @@ export function buildRunCommand(): Command {
     )
     .option("--stasis-steps <n>", "Rejected mutation streak before stopping", parseNonNegativeInteger)
     .option("--resume", "Resume from existing state", false)
+    .option(
+      "--provider <id>",
+      "Override local providers in INSTRUCTIONS.md, GENERATION.md, and RUBRIC.md",
+      parseGenerationProvider
+    )
     .option("--model <id>", "Override rubric model")
+    .option("--omit-skill-diff", "Disable rubric-mode skill diff evidence", false)
     .option(
       "--scoring-mode <mode>",
       "Choose scoring mode: rubric or human",

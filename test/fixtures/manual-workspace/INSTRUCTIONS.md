@@ -1,3 +1,7 @@
+---
+provider: claude
+---
+
 Improve the skill.
 
 Edit `skills/demo/SKILL.md` and increment the integer in `version=<n>` by exactly 1.

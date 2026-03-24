@@ -1,3 +1,7 @@
+---
+provider: codex
+---
+
 You are improving the `frontend-design` skill in `./skills/frontend-design/SKILL.md`.
 
 Review the current SKILL.md and make ONE targeted improvement. Choose the single change that would most increase the quality and distinctiveness of generated frontend output.
