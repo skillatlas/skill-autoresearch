@@ -566,7 +566,7 @@ export class Orchestrator {
     const mutatedSkillWins = winningCandidates.length > state.activeCandidates.length / 2;
 
     if (mutatedSkillWins) {
-      const promotedCandidate = selectBestWinningCandidate(state.activeCandidates);
+      const promotedCandidate = selectBestWinningCandidate(winningCandidates);
       if (!promotedCandidate) {
         throw new Error("Expected a promoted candidate but none was available.");
       }

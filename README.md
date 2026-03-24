@@ -139,7 +139,7 @@ Tells the LLM how to improve the skill on each iteration. This is the prompt use
 ```markdown
 ---
 provider: claude # or "codex"
-model: claude-opus-4-1 # optional
+model: opus # optional
 ---
 
 Review the current SKILL.md and make one targeted improvement.
@@ -158,7 +158,7 @@ Defines what artifact to generate and which provider/model to use. Uses YAML fro
 ```markdown
 ---
 provider: claude # or "codex"
-model: claude-opus-4-1 # optional
+model: opus # optional
 ---
 
 Build a landing page for a fictional company called "Acme Corp". Include a hero, features section, and footer.

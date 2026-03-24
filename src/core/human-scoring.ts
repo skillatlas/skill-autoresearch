@@ -983,24 +983,25 @@ export class LocalHumanReviewService implements HumanReviewService {
     state: RunState
   ): RubricComparisonSnapshot | undefined {
     const latestEntry = state.history[state.history.length - 1];
-    if (
-      !latestEntry?.accepted ||
-      latestEntry.promotedCandidateIndex == null ||
-      !latestEntry.promotedCandidatePath
-    ) {
+    if (!latestEntry?.accepted) {
+      return undefined;
+    }
+
+    const comparisonArtifact = this.resolveHistoricalComparisonArtifact(latestEntry);
+    if (comparisonArtifact?.index == null) {
       return undefined;
     }
 
     const previousEntry = state.history[state.history.length - 2];
-    const previousIncumbentPath =
-      previousEntry?.incumbentPath ??
-      path.join("steps", "0", "baseline");
+    const previousIncumbentPath = previousEntry
+      ? this.resolveHistoricalIncumbentAfterPath(previousEntry)
+      : path.join(state.workspaceRoot, "steps", "0", "baseline");
 
     return {
       stepIndex: latestEntry.stepIndex,
-      candidateIndex: latestEntry.promotedCandidateIndex,
-      incumbentPath: path.resolve(state.workspaceRoot, previousIncumbentPath),
-      candidatePath: path.resolve(state.workspaceRoot, latestEntry.promotedCandidatePath),
+      candidateIndex: comparisonArtifact.index,
+      incumbentPath: previousIncumbentPath,
+      candidatePath: comparisonArtifact.path,
       accepted: true
     };
   }
@@ -1121,7 +1122,7 @@ export class LocalHumanReviewService implements HumanReviewService {
 
     return state.history.map((entry) => {
       const view = this.buildHistoricalStepView(entry, incumbentBeforePath);
-      incumbentBeforePath = this.resolveWorkspacePath(entry.incumbentPath);
+      incumbentBeforePath = this.resolveHistoricalIncumbentAfterPath(entry);
       return view;
     });
   }
@@ -1133,10 +1134,13 @@ export class LocalHumanReviewService implements HumanReviewService {
     const candidateChoices = this.buildHistoricalCandidateChoices(entry);
     const comparisonArtifact = this.resolveHistoricalComparisonArtifact(entry);
     const outcome = entry.accepted ? "accepted" : "rejected";
+    const promotedCandidateIndex = this.resolvePromotedWinningCandidateIndex(entry);
     const promotedLabel =
-      entry.promotedCandidateIndex === undefined
-        ? "Mutated artifact promoted"
-        : `Candidate ${entry.promotedCandidateIndex} promoted`;
+      promotedCandidateIndex === undefined
+        ? comparisonArtifact?.index != null
+          ? `Candidate ${comparisonArtifact.index} promoted`
+          : "Winning candidate promoted"
+        : `Candidate ${promotedCandidateIndex} promoted`;
     const winnerLabel = entry.accepted ? promotedLabel : "Incumbent kept";
     const candidateLabel =
       entry.accepted &&
@@ -1149,7 +1153,7 @@ export class LocalHumanReviewService implements HumanReviewService {
         ? null
         : this.buildHistoricalSkillDiff(incumbentBeforePath, comparisonArtifact.path);
     const defaultCandidateIndex =
-      candidateChoices.find((candidate) => candidate.index === entry.promotedCandidateIndex)?.index ??
+      candidateChoices.find((candidate) => candidate.index === promotedCandidateIndex)?.index ??
       candidateChoices.find((candidate) =>
         entry.winningCandidateIndexes.includes(candidate.index)
       )?.index ??
@@ -1207,6 +1211,8 @@ export class LocalHumanReviewService implements HumanReviewService {
       return [];
     }
 
+    const promotedCandidateIndex = this.resolvePromotedWinningCandidateIndex(entry);
+
     if (entry.candidates && entry.candidates.length > 0) {
       return entry.candidates
         .map((candidate) => ({
@@ -1220,16 +1226,19 @@ export class LocalHumanReviewService implements HumanReviewService {
           label: `Candidate ${candidate.index}`,
           path: resolvedPath,
           url: `${this.baseUrl}/artifact/step-${entry.stepIndex}-candidate-${candidate.index}/`,
-          isWinner: candidate.comparison?.isWinner ?? false,
-          status: candidate.status,
+          isWinner: entry.winningCandidateIndexes.includes(candidate.index),
+          status:
+            entry.accepted && promotedCandidateIndex === candidate.index
+              ? "accepted"
+              : "rejected",
           score: this.buildComparisonScore(candidate.comparison, candidate.status),
           rationales: this.buildCandidateRationales(candidate.votes ?? [])
         }));
     }
 
     const preferredIndexes =
-      entry.accepted && entry.promotedCandidateIndex !== undefined
-        ? [entry.promotedCandidateIndex]
+      entry.accepted && promotedCandidateIndex !== undefined
+        ? [promotedCandidateIndex]
         : entry.winningCandidateIndexes;
     const allCandidateIndexes = Array.from({ length: state.candidateCount }, (_, index) => index);
     const candidateIndexes = [...new Set([...preferredIndexes, ...allCandidateIndexes])];
@@ -1249,7 +1258,7 @@ export class LocalHumanReviewService implements HumanReviewService {
         url: `${this.baseUrl}/artifact/step-${entry.stepIndex}-candidate-${index}/`,
         isWinner: entry.winningCandidateIndexes.includes(index),
         status:
-          entry.accepted && entry.promotedCandidateIndex === index ? "accepted" : "rejected",
+          entry.accepted && promotedCandidateIndex === index ? "accepted" : "rejected",
         score: null,
         rationales: []
       }));
@@ -1263,18 +1272,21 @@ export class LocalHumanReviewService implements HumanReviewService {
       return null;
     }
 
+    const promotedCandidateIndex = this.resolvePromotedWinningCandidateIndex(entry);
     const preferredIndexes =
-      entry.accepted && entry.promotedCandidateIndex !== undefined
-        ? [entry.promotedCandidateIndex]
+      entry.accepted && promotedCandidateIndex !== undefined
+        ? [promotedCandidateIndex]
         : entry.winningCandidateIndexes;
     const allCandidateIndexes = Array.from({ length: state.candidateCount }, (_, index) => index);
-    const candidateIndexes = [...new Set([...preferredIndexes, ...allCandidateIndexes])];
+    const candidateIndexes = entry.accepted
+      ? preferredIndexes
+      : [...new Set([...preferredIndexes, ...allCandidateIndexes])];
 
-    if (entry.accepted && entry.promotedCandidatePath) {
+    if (entry.accepted && promotedCandidateIndex !== undefined && entry.promotedCandidatePath) {
       const promotedCandidatePath = this.resolveWorkspacePath(entry.promotedCandidatePath);
       if (fs.existsSync(promotedCandidatePath)) {
         return {
-          index: entry.promotedCandidateIndex ?? null,
+          index: promotedCandidateIndex,
           path: promotedCandidatePath
         };
       }
@@ -1293,6 +1305,27 @@ export class LocalHumanReviewService implements HumanReviewService {
     }
 
     return null;
+  }
+
+  private resolvePromotedWinningCandidateIndex(entry: HistoryEntry): number | undefined {
+    if (entry.promotedCandidateIndex == null) {
+      return undefined;
+    }
+
+    return entry.winningCandidateIndexes.includes(entry.promotedCandidateIndex)
+      ? entry.promotedCandidateIndex
+      : undefined;
+  }
+
+  private resolveHistoricalIncumbentAfterPath(entry: HistoryEntry): string {
+    if (entry.accepted) {
+      const comparisonArtifact = this.resolveHistoricalComparisonArtifact(entry);
+      if (comparisonArtifact) {
+        return comparisonArtifact.path;
+      }
+    }
+
+    return this.resolveWorkspacePath(entry.incumbentPath);
   }
 
   private relativeToWorkspace(targetPath: string): string {
