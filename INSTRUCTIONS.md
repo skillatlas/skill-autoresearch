@@ -1,5 +1,5 @@
 ---
-provider: codex
+provider: claude
 ---
 
 You are improving the `frontend-design` skill in `./skills/frontend-design/SKILL.md`.
@@ -8,7 +8,7 @@ Review the current SKILL.md and make ONE targeted improvement. Choose the single
 
 ## Possible improvement directions (pick ONE per iteration)
 
-- **Improve the creative process** — Strengthen guidance on *how to think* about design decisions rather than dictating specific outcomes. Good: "Derive your color palette from the content's mood and purpose." Bad: "Use emerald green (#0D9F6E) with warm grey (#4B5563)." The skill should teach taste, not prescribe values.
+- **Improve the creative process** — Strengthen guidance on _how to think_ about design decisions rather than dictating specific outcomes. Good: "Derive your color palette from the content's mood and purpose." Bad: "Use emerald green (#0D9F6E) with warm grey (#4B5563)." The skill should teach taste, not prescribe values.
 - **Add a missing dimension** — If the skill lacks guidance on a topic that materially affects output quality (e.g. dark mode treatment, illustration style, icon usage, scroll behavior, loading states, empty states), add a focused section.
 - **Sharpen anti-patterns** — Expand the list of things to avoid with specific, testable examples. "Avoid generic layouts" is vague; "Never use the exact pattern: full-width hero → three equal-width cards → centered testimonial → CTA banner" is actionable.
 - **Improve variety mechanisms** — Add rules that force variety across generations without dictating what the outputs should converge toward. Good: "Never reuse the same display font across consecutive outputs." Bad: "Use Clash Display or Cabinet Grotesk." The goal is divergence, not convergence on a different set of specifics.
@@ -17,7 +17,7 @@ Review the current SKILL.md and make ONE targeted improvement. Choose the single
 
 ## Critical constraint: DO NOT over-specify
 
-The skill should guide *how to design*, not dictate *what to design*. Every edit must pass this test:
+The skill should guide _how to design_, not dictate _what to design_. Every edit must pass this test:
 
 > "Does this guidance help produce a RANGE of excellent, varied outputs — or does it push every output toward the same specific look?"
 

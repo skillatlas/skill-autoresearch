@@ -2170,7 +2170,7 @@ export class LocalHumanReviewService implements HumanReviewService {
         appearance: none;
         border: 1px solid var(--ink);
         background: var(--ink);
-        color: #e4e4e7;
+        color: var(--paper);
         cursor: pointer;
         font: inherit;
         padding: 12px 18px;

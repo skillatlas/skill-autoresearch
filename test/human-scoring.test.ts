@@ -111,6 +111,7 @@ describe("LocalHumanReviewService", () => {
     expect(shellResponse.ok).toBe(true);
     expect(shellHtml).toContain('data-viewport="480"');
     expect(shellHtml).toContain('data-viewport="960"');
+    expect(shellHtml).toContain("color: var(--paper);");
     expect(shellHtml).toContain(".controls-tools[hidden]");
     expect(shellHtml).toContain('id="preview-controls" hidden');
     expect(shellHtml).toContain(".workspace[hidden]");
